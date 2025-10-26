@@ -1,14 +1,16 @@
 // public/js/rive-introspect.mjs
-// Uses global "rive" (from @rive-app/canvas on the page)
+// Uses the global runtime from the CDN build: globalThis.rive (UMD export)
 
-// Get artboards + state machines without creating a live renderer
 export async function inspectContents(src) {
-  if (!rive?.Rive?.contents) {
-    throw new Error("Rive.contents() not available; update @rive-app/canvas.");
+  const R = (globalThis && globalThis.rive) ? globalThis.rive : null;
+  if (!R || !R.Rive || typeof R.Rive.contents !== 'function') {
+    throw new Error(
+      "Rive runtime not loaded (or contents() unavailable). " +
+      "Make sure the <script src='https://unpkg.com/@rive-app/canvas@2.18.1'></script> " +
+      "is included BEFORE your module scripts."
+    );
   }
-  // Accept Blob/URL string
-  const content = await rive.Rive.contents({ src });
-  // Normalize
+  const content = await R.Rive.contents({ src });
   const artboards = (content?.artboards || []).map(a => ({
     name: a.name,
     stateMachines: (a.stateMachines || []).map(sm => ({ name: sm.name }))
@@ -16,40 +18,55 @@ export async function inspectContents(src) {
   return { artboards };
 }
 
-// Build a schema with actual default VM values by instantiating once
 export async function buildSchema(src, _unusedCanvas, artboard, stateMachine) {
-  const info = await rive.Rive.contents({ src });
-  const ab = pickArtboard(info, artboard);
-  const sm = pickStateMachine(ab, stateMachine);
+  const R = (globalThis && globalThis.rive) ? globalThis.rive : null;
+  if (!R || !R.Rive) {
+    throw new Error("Rive runtime not loaded. Include the @rive-app/canvas script tag first.");
+  }
 
-  // Spin up a headless Rive instance to read VM defaults
-  const canvas = document.createElement('canvas'); // not displayed
+  // Prefer fast, headless contents() if present
+  let info = null;
+  if (typeof R.Rive.contents === 'function') {
+    try { info = await R.Rive.contents({ src }); } catch {}
+  }
+
+  const ab = info ? pickArtboard(info, artboard) : (artboard ? { name: artboard } : null);
+  const sm = info ? pickStateMachine(ab, stateMachine) : (stateMachine ? { name: stateMachine } : null);
+
+  // Spin up an offscreen instance to read ViewModel defaults
+  const canvas = document.createElement('canvas');
   let vmDefaults = [];
-  await new Promise((resolve) => {
-    const r = new rive.Rive({
-      src,
-      canvas,
-      autoplay: false,
-      artboard: ab?.name,
-      stateMachines: sm?.name,
-      autoBind: true,
-      onLoad: function(){
-        try {
-          const vmi = r && r.viewModelInstance ? r.viewModelInstance : null;
-          const props = collectVmPropsFromContents(ab);
-          vmDefaults = props.map(p => ({
-            name: p.name,
-            type: p.type,
-            value: readVmiValue(vmi, p.name, p.type)
-          }));
-        } catch(e) {
-          vmDefaults = [];
-        } finally {
-          try { r.cleanup && r.cleanup(); } catch {}
-          resolve();
-        }
-      }
-    });
+
+  await new Promise((resolve, reject) => {
+    try {
+      const r = new R.Rive({
+        src,
+        canvas,
+        autoplay: false,
+        artboard: ab?.name,
+        stateMachines: sm?.name,
+        autoBind: true,
+        onLoad: function(){
+          try {
+            const vmi = r && r.viewModelInstance ? r.viewModelInstance : null;
+            const props = info ? collectVmPropsFromContents(ab) : []; // best effort
+            vmDefaults = props.map(p => ({
+              name: p.name,
+              type: p.type,
+              value: readVmiValue(vmi, p.name, p.type)
+            }));
+          } catch (e) {
+            vmDefaults = [];
+          } finally {
+            try { r.cleanup && r.cleanup(); } catch {}
+            resolve();
+          }
+        },
+        onError: (e) => { reject(e || new Error("Rive onError")); }
+      });
+    } catch (e) {
+      reject(e);
+    }
   });
 
   return {
@@ -72,17 +89,17 @@ function pickStateMachine(ab, name) {
   if (!name) return list[0];
   return list.find(sm => sm.name === name) || list[0];
 }
+
 function collectVmPropsFromContents(ab) {
-  // Rive.contents typically exposes ab.viewModel.properties or similar.
-  // Normalize across possible shapes.
+  // Normalizes across possible shapes in contents()
   const vm = ab?.viewModel || ab?.viewmodel || ab?.vm || null;
   const arr = vm?.properties || vm?.props || [];
   if (Array.isArray(arr) && arr.length) {
     return arr.map(x => ({ name: x.name, type: normalizeType(x.type) })).filter(Boolean);
   }
-  // Fallback: empty (UI will still work; user can map triggers via selects)
   return [];
 }
+
 function normalizeType(t) {
   const s = String(t || "").toLowerCase();
   if (s.includes("string"))  return "string";
@@ -92,6 +109,7 @@ function normalizeType(t) {
   if (s.includes("trigger")) return "trigger";
   return null;
 }
+
 function readVmiValue(vmi, name, type) {
   if (!vmi || !name || !type) return null;
   try {
@@ -99,7 +117,6 @@ function readVmiValue(vmi, name, type) {
     if (type === "number"  && vmi.number)  { const it=vmi.number(name);  return it ? it.value : null; }
     if (type === "boolean" && vmi.boolean) { const it=vmi.boolean(name); return it ? it.value : null; }
     if (type === "color"   && vmi.color)   { const it=vmi.color(name);   return it ? it.value : null; }
-    // triggers have no default value
     return null;
   } catch { return null; }
 }
