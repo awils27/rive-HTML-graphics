@@ -63,34 +63,79 @@ export function buildTemplate(schema = {}, opts = {}) {
       }, Math.max(0, startMs));
     }` : "";
 
-  const casparApi = mode === "caspar" ? `
-    // --- XML/JSON UPDATE support ---
+const casparApi = mode === "caspar" ? `
+    // --- XML/JSON UPDATE support (robust to Caspar variations) ---
+    function textByTag(root, tag){
+      try { var el = root.getElementsByTagName(tag)[0]; return el ? (el.textContent || '') : ''; } catch(e){ return ''; }
+    }
     function parseTemplateDataXml(raw){
       try{
         var doc = new DOMParser().parseFromString(String(raw), 'application/xml');
         var out = {};
+        // Accept both <componentData> and <componentdata>
         var nodes = doc.getElementsByTagName('componentData');
-        for (var i=0;i<nodes.length;i++){
-          var id = nodes[i].getAttribute('id');
-          var data = nodes[i].getElementsByTagName('data')[0];
-          var val = data ? (data.getAttribute('value') || data.textContent || '') : '';
-          if (id) out[id] = val;
+        if (!nodes || !nodes.length) nodes = doc.getElementsByTagName('componentdata');
+        for (var i=0;i<(nodes?nodes.length:0);i++){
+          var n = nodes[i];
+          var id = n.getAttribute('id') || textByTag(n, 'id');
+          // Accept <data value="..."> or <value>...</value>
+          var dataEl = n.getElementsByTagName('data')[0] || null;
+          var val = dataEl ? (dataEl.getAttribute('value') || dataEl.textContent || '') : textByTag(n, 'value');
+          if (id) out[id] = (val == null ? '' : String(val));
         }
         return out;
       } catch(e){ return {}; }
     }
+    function parseCasparJson(raw){
+      try{
+        var o = (typeof raw === 'string') ? JSON.parse(raw) : raw;
+        if (!o || typeof o !== 'object') return {};
+        // Usual Caspar Client JSON: {"templateData":{"componentData":[{"id":"Name","data":{"value":"X"}}]}}
+        var td = o.templateData || o.templatedata;
+        if (td){
+          var arr = td.componentData || td.componentdata || [];
+          var map = {};
+          for (var i=0;i<arr.length;i++){
+            var it = arr[i] || {};
+            var id = it.id || it.componentId || it.name;
+            var val = (it.data && (it.data.value!=null ? it.data.value : it.data.text))
+                      || it.value || '';
+            if (id) map[id] = String(val);
+          }
+          return map;
+        }
+        // Otherwise assume it's already a flat map of VM names → values
+        return o;
+      } catch(e){ return {}; }
+    }
+    function stripBomAndTrim(s){
+      return String(s||'').replace(/^\\uFEFF/, '').trim();
+    }
     window.update = function(raw){
-      try {
-        var s = (typeof raw === 'string') ? raw.trim() : '';
-        if (s && s.charAt(0) === '<') apply(parseTemplateDataXml(s));
-        else if (s) apply(JSON.parse(s));
-        else if (typeof raw === 'object' && raw) apply(raw);
-      } catch(e){ console.error("bad UPDATE payload", e, raw); }
+      try{
+        if (raw == null) return;
+        var obj = {};
+        if (typeof raw === 'string'){
+          var s = stripBomAndTrim(raw);
+          // Heuristic: XML if first non-space char is '<'
+          var first = s.replace(/^[\\s\\r\\n]+/,'').charAt(0);
+          obj = (first === '<') ? parseTemplateDataXml(s) : parseCasparJson(s);
+        } else if (typeof raw === 'object') {
+          obj = parseCasparJson(raw);
+        }
+        apply(obj);
+      } catch(e){ console.error("UPDATE parse error", e); }
     };
+    // Common aliases some clients use
+    window.data = window.update;
+    window.SetData = window.update;
+
     window.play   = function(){ try { if (r && r.play) r.play(); } catch(e){} ${casparTriggers.in ? `fireVmTrigger(${JSON.stringify(casparTriggers.in)});` : ""} };
     window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger(${JSON.stringify(casparTriggers.next)});` : ""} };
+    // Fire OUT trigger if mapped; otherwise just stop()
     window.stop   = function(){ var fired = ${casparTriggers.out ? `fireVmTrigger(${JSON.stringify(casparTriggers.out)})` : `false`}; if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
     window.remove = function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} };` : "";
+
 
   const obsParams = mode === "obs" ? `
     var trigIn  = params.get("in")  || null;
