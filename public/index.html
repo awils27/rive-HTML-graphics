@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Rive → Caspar / OBS</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    main.container { max-width: 980px }
+    .tabs { display:flex; gap:.5rem; margin:1rem 0 1.25rem }
+    .tabs a[role="tab"] { padding:.5rem 1rem; border-radius:.5rem; border:1px solid var(--pico-muted-border-color) }
+    .tabs a[aria-selected="true"] { background: var(--pico-primary-focus); color:#fff; border-color: transparent }
+    .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:1rem }
+    @media (max-width:900px){ .grid-2{ grid-template-columns:1fr } }
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .muted{color:var(--pico-muted-color)}
+  </style>
+</head>
+<body>
+<main class="container">
+  <h2>Rive → Caspar / OBS</h2>
+  <p class="muted">Front-end only • optional Base64 embedding • ES5-safe outputs</p>
+
+  <article>
+    <label for="rivfile"><strong>.riv file</strong></label>
+    <input id="rivfile" type="file" accept=".riv">
+    <small id="fileStatus" class="muted">No file selected.</small>
+  </article>
+
+  <article id="detected" style="display:none">
+    <div class="grid-2">
+      <div>
+        <label for="artSel">Artboard</label>
+        <select id="artSel"></select>
+      </div>
+      <div>
+        <label for="smSel">State Machine</label>
+        <select id="smSel"></select>
+      </div>
+    </div>
+
+    <details open style="margin-top:1rem">
+      <summary><strong>View Model</strong></summary>
+      <table role="grid" id="vmTable" style="width:100%">
+        <thead><tr><th>Name</th><th>Type</th><th>Default</th></tr></thead>
+        <tbody id="vmBody"></tbody>
+      </table>
+      <p id="vmEmpty" class="muted" style="display:none">No View Model properties.</p>
+    </details>
+  </article>
+
+  <nav class="tabs" role="tablist">
+    <a href="#caspar" id="tabCaspar" role="tab" aria-selected="true">CasparCG</a>
+    <a href="#obs"    id="tabObs"    role="tab">OBS</a>
+  </nav>
+
+  <!-- Caspar -->
+  <section id="caspar" role="tabpanel" aria-labelledby="tabCaspar">
+    <article>
+      <div class="grid-2">
+        <fieldset>
+          <legend>Runtime</legend>
+          <label><input type="radio" name="rt" value="canvas" checked> Canvas</label>
+          <label><input type="radio" name="rt" value="webgl"> WebGL/WebGPU</label>
+        </fieldset>
+        <fieldset>
+          <legend>Embed .riv?</legend>
+          <label><input type="checkbox" id="embedCaspar"> Inline Base64 (no external .riv)</label>
+        </fieldset>
+      </div>
+      <div class="grid-2">
+        <div>
+          <label for="inTrig">In trigger</label>
+          <select id="inTrig"></select>
+        </div>
+        <div>
+          <label for="outTrig">Out trigger</label>
+          <select id="outTrig"></select>
+        </div>
+      </div>
+      <div class="grid-2" style="margin-top:1rem">
+        <div>
+          <label for="nextTrig">Next trigger (optional)</label>
+          <select id="nextTrig"></select>
+        </div>
+        <div>&nbsp;</div>
+      </div>
+
+      <footer style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
+        <button id="dlCaspar" class="contrast" disabled>Download Caspar HTML</button>
+        <small id="status" class="muted" aria-live="polite"></small>
+      </footer>
+    </article>
+  </section>
+
+  <!-- OBS -->
+  <section id="obs" role="tabpanel" aria-labelledby="tabObs" hidden>
+    <article>
+      <div class="grid-2">
+        <fieldset>
+          <legend>Embed .riv?</legend>
+          <label><input type="checkbox" id="embedObs" checked> Inline Base64 (single file)</label>
+        </fieldset>
+        <fieldset>
+          <legend>Timers (ms)</legend>
+          <label>Start<input id="startMs" class="mono" type="number" min="0" step="50" value="0"></label>
+          <label>Out after<input id="outAfterMs" class="mono" type="number" min="0" step="50" value="3000"></label>
+        </fieldset>
+      </div>
+
+      <details>
+        <summary><strong>Bake VM defaults into HTML</strong></summary>
+        <label><input id="bakeDefaults" type="checkbox" checked> Include current VM defaults</label>
+      </details>
+
+      <footer style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
+        <button id="dlObs" class="contrast" disabled>Download OBS HTML</button>
+        <div style="flex:1"></div>
+        <label>Parameters (copy & append)</label>
+        <input id="paramsOut" class="mono" type="text" readonly style="flex:1" />
+        <button id="copyParams">Copy</button>
+      </footer>
+    </article>
+  </section>
+</main>
+
+<script type="module" src="./js/app.mjs"></script>
+</body>
+</html>
