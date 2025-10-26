@@ -1,19 +1,8 @@
 // public/js/template-builders.mjs
 // One generator for both Caspar + OBS. ES5-safe inline scripts.
-// Options:
-//   mode: "caspar" | "obs"
-//   runtime: "canvas" | "webgl"            (Caspar only; OBS is canvas)
-//   embed: true | false                    (embed .riv as Base64)
-//   base64: "<raw base64>"                 (required if embed=true)
-//   rivPath: "graphics.riv"                (used if embed=false)
-//   artboard, stateMachine: string|undefined
-//   casparTriggers: { in?, out?, next? }   (Caspar only)
-//   timers (OBS): { startMs=0, outAfterMs=-1, clearAfterMs=-1 }
-//   vmDefaults: { [name]: string }         (OBS baked defaults)
-//   schema.viewModelProps: [{ name, type, value? }...]
 
 export function buildTemplate(schema = {}, opts = {}) {
-  const mode = opts.mode || "caspar";
+  const mode = opts.mode || "caspar";                  // "caspar" | "obs"
   if (!["caspar", "obs"].includes(mode)) throw new Error("mode must be caspar|obs");
   const runtime = mode === "caspar" ? (opts.runtime || "canvas") : "canvas";
 
@@ -42,11 +31,12 @@ export function buildTemplate(schema = {}, opts = {}) {
     ? Object.keys(vmDefaults).map((name) => bakeDefaultLine(name, vmDefaults[name])).join("\n      ")
     : "";
 
-  const rivSourceExpr =
-    embed
-      ? `RIV_BASE64 ? base64ToBlobUrl(RIV_BASE64) : DEF.riv`
-      : `params.get("riv") || DEF.riv`;
+  // IMPORTANT: do NOT put the base64 inside a JS string. Put it as text content of a non-executed <script>.
+  const b64Tag = embed
+    ? `<script type="application/octet-stream" id="riv-b64">${rivBase64.replace(/<\/script/gi, '<\\/script')}</script>`
+    : `<script type="application/octet-stream" id="riv-b64"></script>`;
 
+  // OBS timer helper
   const obsOnly = mode === "obs" ? `
     function scheduleInOut(){
       setTimeout(function(){
@@ -63,6 +53,7 @@ export function buildTemplate(schema = {}, opts = {}) {
       }, Math.max(0, startMs));
     }` : "";
 
+  // Caspar API (inserted exactly once, at the end of the IIFE)
   const casparApi = mode === "caspar" ? `
     // --- Robust UPDATE: handles XML & lenient JSON (Caspar variations) ---
     function textByTag(root, tag){
@@ -91,35 +82,29 @@ export function buildTemplate(schema = {}, opts = {}) {
       }
       return s;
     }
-    function escapeBareNewlinesInJson(s){
-      // Replace CR/LF that sit inside JSON with \\n so JSON.parse can handle them.
-      return s.replace(/\\r?\\n/g, '\\\\n');
+    function escapeBareNewlinesInJson(s){ return String(s).replace(/\\r?\\n/g, '\\\\n'); }
+    function parseCasparJsonStrict(s){
+      var o = (typeof s === 'string') ? JSON.parse(s) : s;
+      return normalizeCasparJsonObject(o);
     }
     function parseCasparJsonLenient(raw){
       try{
-        // Try strict first
         if (typeof raw === 'string') return parseCasparJsonStrict(raw);
         return normalizeCasparJsonObject(raw);
       } catch(_) {
         try {
-          // Unwrap outer quotes and escape bare newlines
           var s = (typeof raw === 'string') ? raw : JSON.stringify(raw);
           s = stripBomAndTrim(s);
           s = unwrapIfQuoted(s);
           s = escapeBareNewlinesInJson(s);
           return parseCasparJsonStrict(s);
         } catch(__) {
-          // Last resort: loose matcher for "KEY":"VALUE"
           var s2 = (typeof raw === 'string') ? raw : '';
           var out = {};
           s2.replace(/[\\r\\n]+/g, ' ').replace(/"([^"\\\\]+)"\\s*:\\s*"([^"\\\\]*)"/g, function(_, k, v){ out[k] = v; });
           return out;
         }
       }
-    }
-    function parseCasparJsonStrict(s){
-      var o = (typeof s === 'string') ? JSON.parse(s) : s;
-      return normalizeCasparJsonObject(o);
     }
     function normalizeCasparJsonObject(o){
       if (!o || typeof o !== 'object') return {};
@@ -156,38 +141,13 @@ export function buildTemplate(schema = {}, opts = {}) {
     window.data = window.update;
     window.SetData = window.update;
 
-    window.play   = function(){ try { if (r && r.play) r.play(); } catch(e){} ${casparTriggers.in ? `fireVmTrigger(${JSON.stringify(casparTriggers.in)});` : ""} };
-    window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger(${JSON.stringify(casparTriggers.next)});` : ""} };
-    window.stop   = function(){ var fired = ${casparTriggers.out ? `fireVmTrigger(${JSON.stringify(casparTriggers.out)})` : `false`}; if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
-    window.remove = function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} };` : "";
+    window.play   = function(){ try { if (r && r.play) r.play(); } catch(e){} fireVmTrigger("${esc(casparTriggers.in || "IN")}"); };
+    window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger("${esc(casparTriggers.next)}");` : ''} };
+    window.stop   = function(){ var fired = fireVmTrigger("${esc(casparTriggers.out || "OUT")}"); if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
+    window.remove = function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} };
+  ` : "";
 
-  const obsParams = mode === "obs" ? `
-    var trigIn  = params.get("in")  || null;
-    var trigOut = params.get("out") || null;
-    var startMs    = num(params.get("startMs"), DEF.startMs);
-    var outAfterMs = num(params.get("outAfterMs"), DEF.outAfterMs);
-    var clearAfterMs = num(params.get("clearAfterMs"), DEF.clearAfterMs);` : "";
-
-  const obsDefaultsObj = mode === "obs" ? `
-    var DEF = {
-      riv: "./graphics.riv",
-      artboard: ${JSON.stringify(artboard || "")},
-      sm: ${JSON.stringify(stateMachine || "")},
-      startMs: ${startMs},
-      outAfterMs: ${outAfterMs},
-      clearAfterMs: ${clearAfterMs}
-    };` : `
-    var DEF = {
-      riv: ${JSON.stringify(rivPath)},
-      artboard: ${JSON.stringify(artboard || "")},
-      sm: ${JSON.stringify(stateMachine || "")}
-    };`;
-
-  const applyDefaultsBlock = mode === "obs" && vmDefaultsLines ? `
-    function applyBakedDefaults(){ ${vmDefaultsLines} }` : `
-    function applyBakedDefaults(){} // no-op`;
-
-  // ✅ Compute these BEFORE constructing the template string
+  // Precompute VM maps
   const vmIndexLiteral = '{' + vprops.map(p => `"${p.name.toLowerCase()}":"${esc(p.name)}"`).join(',') + '}';
   const vmTypesLiteral = '{' + vprops.map(p => `"${esc(p.name)}":"${p.type}"`).join(',') + '}';
 
@@ -195,7 +155,7 @@ export function buildTemplate(schema = {}, opts = {}) {
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>${mode === "caspar" ? "CasparCG + Rive" : "OBS Rive Player"}</title>
+<title>${mode === "caspar" ? "CasparCG + Rive" : "OBS + Rive"}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <style>
   html{background:transparent;overflow:hidden}
@@ -206,7 +166,7 @@ export function buildTemplate(schema = {}, opts = {}) {
 </head>
 <body>
   <div id="stage"><canvas id="cg" width="1920" height="1080"></canvas></div>
-  ${embed ? '<script type="application/octet-stream" id="riv-b64"></script>' : ""}
+  ${b64Tag}
   ${runtimeScript}
   <script>
   (function(){
@@ -226,9 +186,9 @@ export function buildTemplate(schema = {}, opts = {}) {
       try {
         var t = vmi.trigger ? vmi.trigger(name) : null;
         if (!t) return false;
-        if (typeof t.fire === "function")    { t.fire();    return true; }
-        if (typeof t.trigger === "function") { t.trigger(); return true; }
-        if (typeof t === "object" && "value" in t) { try { t.value = true; return true; } catch(e){} }
+        if (typeof t.fire === "function"){ t.fire(); return true; }
+        if (typeof t.trigger === "function"){ t.trigger(); return true; }
+        if (typeof t === "object" && "value" in t){ try { t.value = true; return true; } catch(e){} }
       } catch(e){}
       return false;
     }
@@ -240,46 +200,60 @@ export function buildTemplate(schema = {}, opts = {}) {
       var blob = new Blob([bytes], { type: "application/octet-stream" });
       return URL.createObjectURL(blob);
     }
+    function getEmbeddedBase64(){ var el = document.getElementById('riv-b64'); return el ? (el.textContent || '') : ""; }
 
     var CANVAS = document.getElementById("cg");
     var r = null, vmi = null;
+
+    // URL params
     var u = new URL(window.location.href);
     var params = u.searchParams;
+
+    // VM maps
     var VM_INDEX = ${vmIndexLiteral};   // lowercased -> exact VM name
     var VM_TYPES = ${vmTypesLiteral};   // exact VM name -> type
 
-    ${obsDefaultsObj}
+    // Defaults
+    var DEF = {
+      riv: ${embed ? '""' : JSON.stringify(rivPath)},
+      artboard: ${JSON.stringify(artboard || "Artboard")},
+      sm: ${JSON.stringify(stateMachine || "State Machine 1")},
+      startMs: ${startMs},
+      outAfterMs: ${outAfterMs},
+      clearAfterMs: ${clearAfterMs}
+    };
 
-    var ab = params.get("artboard") || params.get("ab") || ${artboard ? JSON.stringify(artboard) : "undefined"};
-    var sm = params.get("sm") || params.get("statemachine") || ${stateMachine ? JSON.stringify(stateMachine) : "undefined"};
+    var RIV_BASE64 = ${embed ? 'getEmbeddedBase64()' : '""'};
+    var riv = ${embed ? '(RIV_BASE64 ? base64ToBlobUrl(RIV_BASE64) : DEF.riv)' : '(params.get("riv") || DEF.riv)' };
+    var ab  = params.get("artboard") || params.get("ab") || (DEF.artboard || undefined);
+    var sm  = params.get("sm") || params.get("statemachine") || (DEF.sm || undefined);
 
-    ${mode === "obs" ? obsParams : ""}
-
-    ${embed ? `
-    (function(){ var el = document.getElementById('riv-b64'); if (el) el.textContent = ${JSON.stringify(rivBase64)}; })();
-    function getEmbeddedBase64(){ var el = document.getElementById('riv-b64'); return el ? el.textContent : ""; }
-    var RIV_BASE64 = getEmbeddedBase64();
-    var riv = ${rivSourceExpr};` : `
-    var riv = ${rivSourceExpr};`}
+    var trigIn  = ${JSON.stringify(casparTriggers.in || null)};
+    var trigOut = ${JSON.stringify(casparTriggers.out || null)};
+    var startMs    = num(params.get("startMs"), DEF.startMs);
+    var outAfterMs = num(params.get("outAfterMs"), DEF.outAfterMs);
+    var clearAfterMs = num(params.get("clearAfterMs"), DEF.clearAfterMs);
 
     function applyFromUrl(){
       if (!vmi) return;
       var v, it, n, b, c;
-      ${urlSetters}
+      ${urlSetters || ""}
+      // Generic fallback: any param "vm.Name" not in schema attempts best-effort types
       params.forEach(function(value, key){
-        if (key.indexOf("vm.") !== 0) return;
+        if (key.indexOf("vm.")!==0) return;
         var name = key.slice(3);
         try {
-          if (vmi.string && (it = vmi.string(name)))   { it.value = String(value); return; }
-          if (vmi.number && (it = vmi.number(name)))   { var n = Number(value); if (isFinite(n)) it.value = n; return; }
-          if (vmi.boolean && (it = vmi.boolean(name))) { var b = (String(value).toLowerCase()==="true"||value==="1"||String(value).toLowerCase()==="yes"); it.value = b; return; }
-          if (vmi.color && (it = vmi.color(name)))     { var c = toColor32(value); if (c != null) it.value = c; return; }
-          if (vmi.trigger && (it = vmi.trigger(name))) { if (value === "true" || value === "1") { fireVmTrigger(name); } return; }
+          var it2;
+          if (vmi.string && (it2=vmi.string(name)))   { it2.value = String(value); return; }
+          if (vmi.number && (it2=vmi.number(name)))   { var nn=Number(value); if (isFinite(nn)) it2.value = nn; return; }
+          if (vmi.boolean && (it2=vmi.boolean(name))) { it2.value = (String(value).toLowerCase()==="true"||value==="1"||String(value).toLowerCase()==="yes"); return; }
+          if (vmi.color && (it2=vmi.color(name)))     { var cc=toColor32(value); if (cc!=null) it2.value = cc; return; }
+          if (vmi.trigger && (it2=vmi.trigger(name))) { if (value==="true"||value==="1") { fireVmTrigger(name); } return; }
         } catch(e){}
       });
     }
 
-    ${applyDefaultsBlock}
+    ${vmDefaultsLines ? `function applyBakedDefaults(){ try { if (!vmi) return; ${vmDefaultsLines} } catch(e){} }` : `function applyBakedDefaults(){}`}
 
     function boot(){
       try {
@@ -307,7 +281,7 @@ export function buildTemplate(schema = {}, opts = {}) {
     function apply(o){
       if (!o || !vmi) return;
 
-      // Fast path for exact-name props we inlined
+      // Prefer fast path for exact-name props we inlined (still present if generated)
       ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
 
       // Generic, case-insensitive fallback
@@ -320,7 +294,9 @@ export function buildTemplate(schema = {}, opts = {}) {
             if (VM_INDEX[lc]) name = VM_INDEX[lc];
           }
           var val = o[k];
-          var it, done = false, t = VM_TYPES[name];
+          var it;
+          var t = VM_TYPES[name];
+          var done = false;
 
           try {
             if (t === "string"  && vmi.string  && (it=vmi.string(name)))   { it.value = String(val); done = true; }
@@ -332,6 +308,7 @@ export function buildTemplate(schema = {}, opts = {}) {
 
           if (done) continue;
 
+          // Unknown type: try all non-throwing setters
           try { if (!done && vmi.string  && (it=vmi.string(name)))  { it.value = String(val); done = true; } } catch(e){}
           try { if (!done && vmi.number  && (it=vmi.number(name)))  { var n2=Number(val); if (isFinite(n2)) { it.value = n2; done = true; } } } catch(e){}
           try { if (!done && vmi.boolean && (it=vmi.boolean(name))) { it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; } } catch(e){}
@@ -352,12 +329,12 @@ export function buildTemplate(schema = {}, opts = {}) {
   return html;
 }
 
-// generator helpers
+// helpers
 function numOr(x, d){ return (typeof x === "number" && isFinite(x)) ? x : d; }
 function esc(s){ return String(s).replace(/["\\]/g, (m) => "\\" + m); }
 
 function setterLine(p){
-  const key = `vm.${p.name}`;  // URL key (exact/case sensitive)
+  const key = `vm.${p.name}`;  // exact (case-sensitive) URL key
   const safe = esc(p.name);
   if (p.type === "string")
     return `v = params.get("${key}"); if (v != null) { try { if (vmi && vmi.string) { it = vmi.string("${safe}"); if (it) it.value = String(v); } } catch(e){} }`;
@@ -368,36 +345,26 @@ function setterLine(p){
   if (p.type === "color")
     return `v = params.get("${key}"); if (v != null) { c = toColor32(v); if (c != null) { try { if (vmi && vmi.color) { it = vmi.color("${safe}"); if (it) it.value = c; } } catch(e){} } }`;
   if (p.type === "trigger")
-    return `v = params.get("${key}"); if (v==="true" || v==="1") { try { fireVmTrigger("${safe}"); } catch(e){} }`;
+    return `v = params.get("${key}"); if (v === "true" || v === "1") { try { fireVmTrigger("${safe}"); } catch(e){} }`;
+  return "";
+}
+
+function setterUpdateLine(p){
+  const safe = esc(p.name);
+  if (p.type === "trigger")
+    return `if (o["${safe}"] === true) { try { fireVmTrigger("${safe}"); } catch(e){} }`;
+  if (p.type === "string")
+    return `if (o["${safe}"] != null) try { if (vmi && vmi.string) { var it=vmi.string("${safe}"); if (it) it.value = String(o["${safe}"]); } } catch(e){}`;
+  if (p.type === "number")
+    return `if (o["${safe}"] != null) { var n=Number(o["${safe}"]); if (isFinite(n)) try { if (vmi && vmi.number) { var it=vmi.number("${safe}"); if (it) it.value = n; } } catch(e){} }`;
+  if (p.type === "boolean")
+    return `if (o["${safe}"] != null) try { if (vmi && vmi.boolean) { var it=vmi.boolean("${safe}"); if (it) it.value = (String(o["${safe}"]).toLowerCase()==="true"||o["${safe}"]===true||o["${safe}"]===1||String(o["${safe}"]).toLowerCase()==="yes"); } } catch(e){}`;
+  if (p.type === "color")
+    return `if (o["${safe}"] != null) { var c=toColor32(o["${safe}"]); if (c!=null) try { if (vmi && vmi.color) { var it=vmi.color("${safe}"); if (it) it.value = c; } } catch(e){} }`;
   return "";
 }
 
 function bakeDefaultLine(name, value){
   const safe = esc(name);
-  const valS = String(value);
-  return `(function(){
-    var it;
-    try {
-      if (vmi.string && (it = vmi.string("${safe}")))   { it.value = ${JSON.stringify(valS)}; return; }
-      if (vmi.number && (it = vmi.number("${safe}")))   { var n = Number(${JSON.stringify(valS)}); if (isFinite(n)) it.value = n; return; }
-      if (vmi.boolean && (it = vmi.boolean("${safe}"))) { var b = (String(${JSON.stringify(valS)}).toLowerCase() === "true"); it.value = b; return; }
-      if (vmi.color && (it = vmi.color("${safe}")))     { var c = toColor32(${JSON.stringify(valS)}); if (c!=null) it.value = c; return; }
-    } catch(e){}
-  })();`;
-}
-
-function setterUpdateLine(p){
-  const key = p.name; // Caspar UPDATE uses VM names as keys (case-sensitive)
-  const safe = esc(p.name);
-  if (p.type === "string")
-    return `if (o["${key}"] != null) try { if (vmi && vmi.string) { var it=vmi.string("${safe}"); if (it) it.value = String(o["${key}"]); } } catch(e){}`;
-  if (p.type === "number")
-    return `if (o["${key}"] != null) try { if (vmi && vmi.number) { var it=vmi.number("${safe}"); if (it) it.value = Number(o["${key}"]||0); } } catch(e){}`;
-  if (p.type === "boolean")
-    return `if (o["${key}"] != null) try { if (vmi && vmi.boolean) { var it=vmi.boolean("${safe}"); if (it) it.value = !!o["${key}"]; } } catch(e){}`;
-  if (p.type === "color")
-    return `if (o["${key}"] != null) { try { var s=String(o["${key}"]).trim(); var c=(s.charAt(0)==="#") ? (s.length===7 ? (0xFF000000|parseInt(s.slice(1),16))>>>0 : (parseInt(s.slice(1),16))>>>0) : Number(s); if (vmi && vmi.color) { var it=vmi.color("${safe}"); if (it) it.value = c; } } catch(e){} }`;
-  if (p.type === "trigger")
-    return `if (o["${key}"] === true) { try { fireVmTrigger("${safe}"); } catch(e){} }`;
-  return "";
+  return `try { var it=vmi && vmi.string ? vmi.string("${safe}") : null; if (it) it.value = String(${JSON.stringify(String(value))}); } catch(e){}`;
 }
