@@ -63,7 +63,7 @@ export function buildTemplate(schema = {}, opts = {}) {
       }, Math.max(0, startMs));
     }` : "";
 
-const casparApi = mode === "caspar" ? `
+  const casparApi = mode === "caspar" ? `
     // --- Robust UPDATE: handles XML & lenient JSON (Caspar variations) ---
     function textByTag(root, tag){
       try { var el = root.getElementsByTagName(tag)[0]; return el ? (el.textContent || '') : ''; } catch(e){ return ''; }
@@ -93,7 +93,6 @@ const casparApi = mode === "caspar" ? `
     }
     function escapeBareNewlinesInJson(s){
       // Replace CR/LF that sit inside JSON with \\n so JSON.parse can handle them.
-      // This is a heuristic: safe enough for Caspar Client payloads.
       return s.replace(/\\r?\\n/g, '\\\\n');
     }
     function parseCasparJsonLenient(raw){
@@ -162,8 +161,6 @@ const casparApi = mode === "caspar" ? `
     window.stop   = function(){ var fired = ${casparTriggers.out ? `fireVmTrigger(${JSON.stringify(casparTriggers.out)})` : `false`}; if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
     window.remove = function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} };` : "";
 
-
-
   const obsParams = mode === "obs" ? `
     var trigIn  = params.get("in")  || null;
     var trigOut = params.get("out") || null;
@@ -189,6 +186,10 @@ const casparApi = mode === "caspar" ? `
   const applyDefaultsBlock = mode === "obs" && vmDefaultsLines ? `
     function applyBakedDefaults(){ ${vmDefaultsLines} }` : `
     function applyBakedDefaults(){} // no-op`;
+
+  // ✅ Compute these BEFORE constructing the template string
+  const vmIndexLiteral = '{' + vprops.map(p => `"${p.name.toLowerCase()}":"${esc(p.name)}"`).join(',') + '}';
+  const vmTypesLiteral = '{' + vprops.map(p => `"${esc(p.name)}":"${p.type}"`).join(',') + '}';
 
   const html = `<!doctype html>
 <html>
@@ -247,7 +248,6 @@ const casparApi = mode === "caspar" ? `
     var VM_INDEX = ${vmIndexLiteral};   // lowercased -> exact VM name
     var VM_TYPES = ${vmTypesLiteral};   // exact VM name -> type
 
-
     ${obsDefaultsObj}
 
     var ab = params.get("artboard") || params.get("ab") || ${artboard ? JSON.stringify(artboard) : "undefined"};
@@ -304,47 +304,42 @@ const casparApi = mode === "caspar" ? `
 
     ${obsOnly}
 
-function apply(o){
-  if (!o || !vmi) return;
+    function apply(o){
+      if (!o || !vmi) return;
 
-  // First, fast path for exact-name props we inlined (still present if generated)
-  ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
+      // Fast path for exact-name props we inlined
+      ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
 
-  // Then a generic, case-insensitive fallback for any remaining keys
-  try {
-    for (var k in o) {
-      if (!o.hasOwnProperty(k)) continue;
-      var name = k;
-      if (!VM_TYPES[name]) {
-        var lc = String(k).toLowerCase();
-        if (VM_INDEX[lc]) name = VM_INDEX[lc];
-      }
-      var val = o[k];
-      var it;
-
-      // Prefer known type setter
-      var t = VM_TYPES[name];
-      var done = false;
+      // Generic, case-insensitive fallback
       try {
-        if (t === "string"  && vmi.string  && (it=vmi.string(name)))   { it.value = String(val); done = true; }
-        else if (t === "number" && vmi.number && (it=vmi.number(name))) { var n=Number(val); if (isFinite(n)) { it.value = n; done = true; } }
-        else if (t === "boolean"&& vmi.boolean&& (it=vmi.boolean(name))){ it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; }
-        else if (t === "color"  && vmi.color  && (it=vmi.color(name)))   { var c = toColor32(val); if (c!=null){ it.value = c; done = true; } }
-        else if (t === "trigger" && (val===true || String(val)==="true" || String(val)==="1")) { fireVmTrigger(name); done = true; }
+        for (var k in o) {
+          if (!o.hasOwnProperty(k)) continue;
+          var name = k;
+          if (!VM_TYPES[name]) {
+            var lc = String(k).toLowerCase();
+            if (VM_INDEX[lc]) name = VM_INDEX[lc];
+          }
+          var val = o[k];
+          var it, done = false, t = VM_TYPES[name];
+
+          try {
+            if (t === "string"  && vmi.string  && (it=vmi.string(name)))   { it.value = String(val); done = true; }
+            else if (t === "number" && vmi.number && (it=vmi.number(name))) { var n=Number(val); if (isFinite(n)) { it.value = n; done = true; } }
+            else if (t === "boolean"&& vmi.boolean&& (it=vmi.boolean(name))){ it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; }
+            else if (t === "color"  && vmi.color  && (it=vmi.color(name)))   { var c = toColor32(val); if (c!=null){ it.value = c; done = true; } }
+            else if (t === "trigger" && (val===true || String(val)==="true" || String(val)==="1")) { fireVmTrigger(name); done = true; }
+          } catch(e){}
+
+          if (done) continue;
+
+          try { if (!done && vmi.string  && (it=vmi.string(name)))  { it.value = String(val); done = true; } } catch(e){}
+          try { if (!done && vmi.number  && (it=vmi.number(name)))  { var n2=Number(val); if (isFinite(n2)) { it.value = n2; done = true; } } } catch(e){}
+          try { if (!done && vmi.boolean && (it=vmi.boolean(name))) { it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; } } catch(e){}
+          try { if (!done && vmi.color   && (it=vmi.color(name)))   { var c2=toColor32(val); if (c2!=null) { it.value = c2; done = true; } } } catch(e){}
+          if (!done && (val===true || String(val)==="true" || String(val)==="1")) { try { fireVmTrigger(name); } catch(e){} }
+        }
       } catch(e){}
-
-      if (done) continue;
-
-      // Unknown type: try all non-throwing setters
-      try { if (!done && vmi.string  && (it=vmi.string(name)))  { it.value = String(val); done = true; } } catch(e){}
-      try { if (!done && vmi.number  && (it=vmi.number(name)))  { var n2=Number(val); if (isFinite(n2)) { it.value = n2; done = true; } } } catch(e){}
-      try { if (!done && vmi.boolean && (it=vmi.boolean(name))) { it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; } } catch(e){}
-      try { if (!done && vmi.color   && (it=vmi.color(name)))   { var c2=toColor32(val); if (c2!=null) { it.value = c2; done = true; } } } catch(e){}
-      if (!done && (val===true || String(val)==="true" || String(val)==="1")) { try { fireVmTrigger(name); } catch(e){} }
     }
-  } catch(e){}
-}
-
 
     boot();
 
@@ -353,9 +348,6 @@ function apply(o){
   </script>
 </body>
 </html>`;
-
-  const vmIndexLiteral = '{' + vprops.map(p => `"${p.name.toLowerCase()}":"${esc(p.name)}"`).join(',') + '}';
-  const vmTypesLiteral = '{' + vprops.map(p => `"${esc(p.name)}":"${p.type}"`).join(',') + '}';
 
   return html;
 }
