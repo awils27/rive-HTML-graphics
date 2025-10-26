@@ -1,6 +1,8 @@
+// public/js/app.mjs
 import { $, sanitizeFilename, downloadBlob, fileToBase64 } from './utils.mjs';
 import { buildTemplate } from './template-builders.mjs';
 import { inspectContents, buildSchema } from './rive-introspect.mjs';
+import { downloadCasparPresetXml } from './preset.mjs';
 
 const els = {
   file:       $('#rivfile'),
@@ -12,22 +14,20 @@ const els = {
   vmBody:     $('#vmBody'),
   vmEmpty:    $('#vmEmpty'),
 
-  // tabs
   tabCaspar:  $('#tabCaspar'),
   tabObs:     $('#tabObs'),
   panelCaspar:$('#caspar'),
   panelObs:   $('#obs'),
 
-  // Caspar controls
   rtRadios:   [...document.querySelectorAll('input[name="rt"]')],
   embedCaspar:$('#embedCaspar'),
   inTrig:     $('#inTrig'),
   outTrig:    $('#outTrig'),
   nextTrig:   $('#nextTrig'),
   dlCaspar:   $('#dlCaspar'),
+  dlCasparXml:$('#dlCasparXml'),
   status:     $('#status'),
 
-  // OBS controls
   embedObs:   $('#embedObs'),
   startMs:    $('#startMs'),
   outAfterMs: $('#outAfterMs'),
@@ -146,6 +146,7 @@ els.file.addEventListener('change', async () => {
 
   els.detected.style.display = 'block';
   els.dlCaspar.disabled = false;
+  els.dlCasparXml.disabled = false;
   els.dlObs.disabled = false;
 
   buildParamsPreview();
@@ -218,6 +219,13 @@ els.dlCaspar.addEventListener('click', async () => {
   const name = sanitizeFilename(`caspar-${baseName}.html`);
   downloadBlob(new Blob([html], { type: 'text/html' }), name);
   els.status.textContent = 'Downloaded.';
+});
+
+els.dlCasparXml.addEventListener('click', () => {
+  if (!schema) return;
+  const htmlName = `caspar-${baseName}.html`;
+  downloadCasparPresetXml(schema, htmlName);
+  els.status.textContent = 'Downloaded preset.';
 });
 
 els.dlObs.addEventListener('click', async () => {

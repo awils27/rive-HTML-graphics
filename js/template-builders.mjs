@@ -1,5 +1,5 @@
 // public/js/template-builders.mjs
-// One generator for both Caspar + OBS. Produces ES5-safe inline scripts.
+// One generator for both Caspar + OBS. ES5-safe inline scripts.
 // Options:
 //   mode: "caspar" | "obs"
 //   runtime: "canvas" | "webgl"            (Caspar only; OBS is canvas)
@@ -9,7 +9,7 @@
 //   artboard, stateMachine: string|undefined
 //   casparTriggers: { in?, out?, next? }   (Caspar only)
 //   timers (OBS): { startMs=0, outAfterMs=-1, clearAfterMs=-1 }
-//   vmDefaults: { [name]: string }         (optional baked defaults for OBS)
+//   vmDefaults: { [name]: string }         (OBS baked defaults)
 //   schema.viewModelProps: [{ name, type, value? }...]
 
 export function buildTemplate(schema = {}, opts = {}) {
@@ -27,10 +27,9 @@ export function buildTemplate(schema = {}, opts = {}) {
 
   const casparTriggers = opts.casparTriggers || {};
   const timers = opts.timers || {};
-  const startMs = isNum(timers.startMs) ? timers.startMs : 0;
-  const outAfterMs = isNum(timers.outAfterMs) ? timers.outAfterMs : -1;
-  const clearAfterMs = isNum(timers.clearAfterMs) ? timers.clearAfterMs : -1;
-
+  const startMs = numOr(timers.startMs, 0);
+  const outAfterMs = numOr(timers.outAfterMs, -1);
+  const clearAfterMs = numOr(timers.clearAfterMs, -1);
   const vmDefaults = opts.vmDefaults && typeof opts.vmDefaults === "object" ? opts.vmDefaults : null;
 
   const runtimeScript =
@@ -38,12 +37,7 @@ export function buildTemplate(schema = {}, opts = {}) {
       ? '<script src="https://unpkg.com/@rive-app/webgl@2.18.1"></script>'
       : '<script src="https://unpkg.com/@rive-app/canvas@2.18.1"></script>';
 
-  // create per-prop setters (ES5 target inside generated page)
-  const urlSetters = vprops
-    .map((p) => setterLine(p))
-    .filter(Boolean)
-    .join("\n      ");
-
+  const urlSetters = vprops.map(setterLine).filter(Boolean).join("\n      ");
   const vmDefaultsLines = vmDefaults
     ? Object.keys(vmDefaults).map((name) => bakeDefaultLine(name, vmDefaults[name])).join("\n      ")
     : "";
@@ -54,7 +48,6 @@ export function buildTemplate(schema = {}, opts = {}) {
       : `params.get("riv") || DEF.riv`;
 
   const obsOnly = mode === "obs" ? `
-    // timers and optional clear
     function scheduleInOut(){
       setTimeout(function(){
         try { if (r && r.play) r.play(); } catch(e){}
@@ -71,8 +64,29 @@ export function buildTemplate(schema = {}, opts = {}) {
     }` : "";
 
   const casparApi = mode === "caspar" ? `
-    // CasparCG HTML template API (UPDATE/PLAY/NEXT/STOP/REMOVE)
-    window.update = function(raw){ try { apply(JSON.parse(raw)); } catch(e){ console.error("bad JSON for UPDATE", e, raw); } };
+    // --- XML/JSON UPDATE support ---
+    function parseTemplateDataXml(raw){
+      try{
+        var doc = new DOMParser().parseFromString(String(raw), 'application/xml');
+        var out = {};
+        var nodes = doc.getElementsByTagName('componentData');
+        for (var i=0;i<nodes.length;i++){
+          var id = nodes[i].getAttribute('id');
+          var data = nodes[i].getElementsByTagName('data')[0];
+          var val = data ? (data.getAttribute('value') || data.textContent || '') : '';
+          if (id) out[id] = val;
+        }
+        return out;
+      } catch(e){ return {}; }
+    }
+    window.update = function(raw){
+      try {
+        var s = (typeof raw === 'string') ? raw.trim() : '';
+        if (s && s.charAt(0) === '<') apply(parseTemplateDataXml(s));
+        else if (s) apply(JSON.parse(s));
+        else if (typeof raw === 'object' && raw) apply(raw);
+      } catch(e){ console.error("bad UPDATE payload", e, raw); }
+    };
     window.play   = function(){ try { if (r && r.play) r.play(); } catch(e){} ${casparTriggers.in ? `fireVmTrigger(${JSON.stringify(casparTriggers.in)});` : ""} };
     window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger(${JSON.stringify(casparTriggers.next)});` : ""} };
     window.stop   = function(){ var fired = ${casparTriggers.out ? `fireVmTrigger(${JSON.stringify(casparTriggers.out)})` : `false`}; if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
@@ -101,7 +115,6 @@ export function buildTemplate(schema = {}, opts = {}) {
     };`;
 
   const applyDefaultsBlock = mode === "obs" && vmDefaultsLines ? `
-    // baked VM defaults (before URL overrides)
     function applyBakedDefaults(){ ${vmDefaultsLines} }` : `
     function applyBakedDefaults(){} // no-op`;
 
@@ -125,15 +138,8 @@ export function buildTemplate(schema = {}, opts = {}) {
   <script>
   (function(){
     "use strict";
-    // helpers
     function num(v, d){ var n = Number(v); return isFinite(n) ? n : d; }
-    function toBool(v, d){
-      if (v == null) return d;
-      var s = String(v).toLowerCase();
-      if (s === "true" || s === "1" || s === "yes") return true;
-      if (s === "false"|| s === "0" || s === "no")  return false;
-      return d;
-    }
+    function numOr(v, d){ return (typeof v === "number" && isFinite(v)) ? v : d; }
     function toColor32(raw){
       if (raw == null) return null;
       var s = String(raw).trim();
@@ -169,14 +175,12 @@ export function buildTemplate(schema = {}, opts = {}) {
 
     ${obsDefaultsObj}
 
-    // choose artboard/SM from URL or defaults
     var ab = params.get("artboard") || params.get("ab") || ${artboard ? JSON.stringify(artboard) : "undefined"};
     var sm = params.get("sm") || params.get("statemachine") || ${stateMachine ? JSON.stringify(stateMachine) : "undefined"};
 
     ${mode === "obs" ? obsParams : ""}
 
     ${embed ? `
-    // inject base64 into the script tag to avoid huge JS string parsing
     (function(){ var el = document.getElementById('riv-b64'); if (el) el.textContent = ${JSON.stringify(rivBase64)}; })();
     function getEmbeddedBase64(){ var el = document.getElementById('riv-b64'); return el ? el.textContent : ""; }
     var RIV_BASE64 = getEmbeddedBase64();
@@ -187,14 +191,13 @@ export function buildTemplate(schema = {}, opts = {}) {
       if (!vmi) return;
       var v, it, n, b, c;
       ${urlSetters}
-      // fallback: allow any vm.* key
       params.forEach(function(value, key){
         if (key.indexOf("vm.") !== 0) return;
         var name = key.slice(3);
         try {
           if (vmi.string && (it = vmi.string(name)))   { it.value = String(value); return; }
           if (vmi.number && (it = vmi.number(name)))   { var n = Number(value); if (isFinite(n)) it.value = n; return; }
-          if (vmi.boolean && (it = vmi.boolean(name))) { it.value = toBool(value, false); return; }
+          if (vmi.boolean && (it = vmi.boolean(name))) { var b = (String(value).toLowerCase()==="true"||value==="1"||String(value).toLowerCase()==="yes"); it.value = b; return; }
           if (vmi.color && (it = vmi.color(name)))     { var c = toColor32(value); if (c != null) it.value = c; return; }
           if (vmi.trigger && (it = vmi.trigger(name))) { if (value === "true" || value === "1") { fireVmTrigger(name); } return; }
         } catch(e){}
@@ -227,9 +230,8 @@ export function buildTemplate(schema = {}, opts = {}) {
     ${obsOnly}
 
     function apply(o){
-      if (!o) return;
-      // (Caspar) JSON → View Model setters were injected above in applyFromUrl-style
-      ${mode === "caspar" ? vprops.map(p => setterUpdateLine(p)).join("\n      ") : ""}
+      if (!o || !vmi) return;
+      ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
     }
 
     boot();
@@ -243,12 +245,12 @@ export function buildTemplate(schema = {}, opts = {}) {
   return html;
 }
 
-// ---- helpers for generator code (not emitted) ----
-function isNum(x){ return typeof x === "number" && isFinite(x); }
+// generator helpers
+function numOr(x, d){ return (typeof x === "number" && isFinite(x)) ? x : d; }
 function esc(s){ return String(s).replace(/["\\]/g, (m) => "\\" + m); }
 
 function setterLine(p){
-  const key = `vm.${p.name}`;       // URL key (exact/case sensitive)
+  const key = `vm.${p.name}`;  // URL key (exact/case sensitive)
   const safe = esc(p.name);
   if (p.type === "string")
     return `v = params.get("${key}"); if (v != null) { try { if (vmi && vmi.string) { it = vmi.string("${safe}"); if (it) it.value = String(v); } } catch(e){} }`;
@@ -278,7 +280,7 @@ function bakeDefaultLine(name, value){
 }
 
 function setterUpdateLine(p){
-  const key = p.name; // Caspar UPDATE uses plain keys that match VM names (or your aliasing layer if any)
+  const key = p.name; // Caspar UPDATE uses VM names as keys (case-sensitive)
   const safe = esc(p.name);
   if (p.type === "string")
     return `if (o["${key}"] != null) try { if (vmi && vmi.string) { var it=vmi.string("${safe}"); if (it) it.value = String(o["${key}"]); } } catch(e){}`;
