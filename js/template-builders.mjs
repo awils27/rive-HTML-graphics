@@ -64,7 +64,7 @@ export function buildTemplate(schema = {}, opts = {}) {
     }` : "";
 
 const casparApi = mode === "caspar" ? `
-    // --- XML/JSON UPDATE support (robust to Caspar variations) ---
+    // --- Robust UPDATE: handles XML & lenient JSON (Caspar variations) ---
     function textByTag(root, tag){
       try { var el = root.getElementsByTagName(tag)[0]; return el ? (el.textContent || '') : ''; } catch(e){ return ''; }
     }
@@ -72,13 +72,11 @@ const casparApi = mode === "caspar" ? `
       try{
         var doc = new DOMParser().parseFromString(String(raw), 'application/xml');
         var out = {};
-        // Accept both <componentData> and <componentdata>
         var nodes = doc.getElementsByTagName('componentData');
         if (!nodes || !nodes.length) nodes = doc.getElementsByTagName('componentdata');
         for (var i=0;i<(nodes?nodes.length:0);i++){
           var n = nodes[i];
           var id = n.getAttribute('id') || textByTag(n, 'id');
-          // Accept <data value="..."> or <value>...</value>
           var dataEl = n.getElementsByTagName('data')[0] || null;
           var val = dataEl ? (dataEl.getAttribute('value') || dataEl.textContent || '') : textByTag(n, 'value');
           if (id) out[id] = (val == null ? '' : String(val));
@@ -86,42 +84,71 @@ const casparApi = mode === "caspar" ? `
         return out;
       } catch(e){ return {}; }
     }
-    function parseCasparJson(raw){
+    function stripBomAndTrim(s){ return String(s||'').replace(/^\\uFEFF/, '').trim(); }
+    function unwrapIfQuoted(s){
+      if (s.length >= 2 && ((s[0] === '"' && s[s.length-1] === '"') || (s[0] === "'" && s[s.length-1] === "'"))) {
+        return s.slice(1, -1);
+      }
+      return s;
+    }
+    function escapeBareNewlinesInJson(s){
+      // Replace CR/LF that sit inside JSON with \\n so JSON.parse can handle them.
+      // This is a heuristic: safe enough for Caspar Client payloads.
+      return s.replace(/\\r?\\n/g, '\\\\n');
+    }
+    function parseCasparJsonLenient(raw){
       try{
-        var o = (typeof raw === 'string') ? JSON.parse(raw) : raw;
-        if (!o || typeof o !== 'object') return {};
-        // Usual Caspar Client JSON: {"templateData":{"componentData":[{"id":"Name","data":{"value":"X"}}]}}
-        var td = o.templateData || o.templatedata;
-        if (td){
-          var arr = td.componentData || td.componentdata || [];
-          var map = {};
-          for (var i=0;i<arr.length;i++){
-            var it = arr[i] || {};
-            var id = it.id || it.componentId || it.name;
-            var val = (it.data && (it.data.value!=null ? it.data.value : it.data.text))
-                      || it.value || '';
-            if (id) map[id] = String(val);
-          }
-          return map;
+        // Try strict first
+        if (typeof raw === 'string') return parseCasparJsonStrict(raw);
+        return normalizeCasparJsonObject(raw);
+      } catch(_) {
+        try {
+          // Unwrap outer quotes and escape bare newlines
+          var s = (typeof raw === 'string') ? raw : JSON.stringify(raw);
+          s = stripBomAndTrim(s);
+          s = unwrapIfQuoted(s);
+          s = escapeBareNewlinesInJson(s);
+          return parseCasparJsonStrict(s);
+        } catch(__) {
+          // Last resort: loose matcher for "KEY":"VALUE"
+          var s2 = (typeof raw === 'string') ? raw : '';
+          var out = {};
+          s2.replace(/[\\r\\n]+/g, ' ').replace(/"([^"\\\\]+)"\\s*:\\s*"([^"\\\\]*)"/g, function(_, k, v){ out[k] = v; });
+          return out;
         }
-        // Otherwise assume it's already a flat map of VM names → values
-        return o;
-      } catch(e){ return {}; }
+      }
     }
-    function stripBomAndTrim(s){
-      return String(s||'').replace(/^\\uFEFF/, '').trim();
+    function parseCasparJsonStrict(s){
+      var o = (typeof s === 'string') ? JSON.parse(s) : s;
+      return normalizeCasparJsonObject(o);
     }
+    function normalizeCasparJsonObject(o){
+      if (!o || typeof o !== 'object') return {};
+      var td = o.templateData || o.templatedata;
+      if (td){
+        var arr = td.componentData || td.componentdata || [];
+        var map = {};
+        for (var i=0;i<arr.length;i++){
+          var it = arr[i] || {};
+          var id = it.id || it.componentId || it.name;
+          var val = (it.data && (it.data.value!=null ? it.data.value : it.data.text)) || it.value || '';
+          if (id) map[id] = String(val);
+        }
+        return map;
+      }
+      return o; // assume already flat map
+    }
+
     window.update = function(raw){
       try{
         if (raw == null) return;
         var obj = {};
         if (typeof raw === 'string'){
           var s = stripBomAndTrim(raw);
-          // Heuristic: XML if first non-space char is '<'
           var first = s.replace(/^[\\s\\r\\n]+/,'').charAt(0);
-          obj = (first === '<') ? parseTemplateDataXml(s) : parseCasparJson(s);
+          obj = (first === '<') ? parseTemplateDataXml(s) : parseCasparJsonLenient(s);
         } else if (typeof raw === 'object') {
-          obj = parseCasparJson(raw);
+          obj = parseCasparJsonLenient(raw);
         }
         apply(obj);
       } catch(e){ console.error("UPDATE parse error", e); }
@@ -132,9 +159,9 @@ const casparApi = mode === "caspar" ? `
 
     window.play   = function(){ try { if (r && r.play) r.play(); } catch(e){} ${casparTriggers.in ? `fireVmTrigger(${JSON.stringify(casparTriggers.in)});` : ""} };
     window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger(${JSON.stringify(casparTriggers.next)});` : ""} };
-    // Fire OUT trigger if mapped; otherwise just stop()
     window.stop   = function(){ var fired = ${casparTriggers.out ? `fireVmTrigger(${JSON.stringify(casparTriggers.out)})` : `false`}; if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
     window.remove = function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} };` : "";
+
 
 
   const obsParams = mode === "obs" ? `
@@ -217,6 +244,9 @@ const casparApi = mode === "caspar" ? `
     var r = null, vmi = null;
     var u = new URL(window.location.href);
     var params = u.searchParams;
+    var VM_INDEX = ${vmIndexLiteral};   // lowercased -> exact VM name
+    var VM_TYPES = ${vmTypesLiteral};   // exact VM name -> type
+
 
     ${obsDefaultsObj}
 
@@ -274,10 +304,47 @@ const casparApi = mode === "caspar" ? `
 
     ${obsOnly}
 
-    function apply(o){
-      if (!o || !vmi) return;
-      ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
+function apply(o){
+  if (!o || !vmi) return;
+
+  // First, fast path for exact-name props we inlined (still present if generated)
+  ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
+
+  // Then a generic, case-insensitive fallback for any remaining keys
+  try {
+    for (var k in o) {
+      if (!o.hasOwnProperty(k)) continue;
+      var name = k;
+      if (!VM_TYPES[name]) {
+        var lc = String(k).toLowerCase();
+        if (VM_INDEX[lc]) name = VM_INDEX[lc];
+      }
+      var val = o[k];
+      var it;
+
+      // Prefer known type setter
+      var t = VM_TYPES[name];
+      var done = false;
+      try {
+        if (t === "string"  && vmi.string  && (it=vmi.string(name)))   { it.value = String(val); done = true; }
+        else if (t === "number" && vmi.number && (it=vmi.number(name))) { var n=Number(val); if (isFinite(n)) { it.value = n; done = true; } }
+        else if (t === "boolean"&& vmi.boolean&& (it=vmi.boolean(name))){ it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; }
+        else if (t === "color"  && vmi.color  && (it=vmi.color(name)))   { var c = toColor32(val); if (c!=null){ it.value = c; done = true; } }
+        else if (t === "trigger" && (val===true || String(val)==="true" || String(val)==="1")) { fireVmTrigger(name); done = true; }
+      } catch(e){}
+
+      if (done) continue;
+
+      // Unknown type: try all non-throwing setters
+      try { if (!done && vmi.string  && (it=vmi.string(name)))  { it.value = String(val); done = true; } } catch(e){}
+      try { if (!done && vmi.number  && (it=vmi.number(name)))  { var n2=Number(val); if (isFinite(n2)) { it.value = n2; done = true; } } } catch(e){}
+      try { if (!done && vmi.boolean && (it=vmi.boolean(name))) { it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; } } catch(e){}
+      try { if (!done && vmi.color   && (it=vmi.color(name)))   { var c2=toColor32(val); if (c2!=null) { it.value = c2; done = true; } } } catch(e){}
+      if (!done && (val===true || String(val)==="true" || String(val)==="1")) { try { fireVmTrigger(name); } catch(e){} }
     }
+  } catch(e){}
+}
+
 
     boot();
 
@@ -286,6 +353,9 @@ const casparApi = mode === "caspar" ? `
   </script>
 </body>
 </html>`;
+
+  const vmIndexLiteral = '{' + vprops.map(p => `"${p.name.toLowerCase()}":"${esc(p.name)}"`).join(',') + '}';
+  const vmTypesLiteral = '{' + vprops.map(p => `"${esc(p.name)}":"${p.type}"`).join(',') + '}';
 
   return html;
 }
