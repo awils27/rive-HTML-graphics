@@ -1,5 +1,8 @@
 // public/js/template-builders.mjs
-// One generator for both Caspar + OBS. ES5-safe inline scripts.
+// Generates single-file HTML templates for CasparCG and OBS (front-end only).
+// - Robust update handling (XML/JSON) with early-call capture & first-play guard
+// - Optional Base64 embedding of .riv (no network needed)
+// - ES5-safe inline JS for Caspar's CEF
 
 export function buildTemplate(schema = {}, opts = {}) {
   const mode = opts.mode || "caspar";                  // "caspar" | "obs"
@@ -14,7 +17,7 @@ export function buildTemplate(schema = {}, opts = {}) {
   const rivBase64 = embed ? (opts.base64 || "") : "";
   const rivPath   = !embed ? (opts.rivPath || "./graphics.riv") : "";
 
-  const casparTriggers = opts.casparTriggers || {};
+  const casparTriggers = opts.casparTriggers || {};   // { in?, out?, next? }
   const timers = opts.timers || {};
   const startMs = numOr(timers.startMs, 0);
   const outAfterMs = numOr(timers.outAfterMs, -1);
@@ -26,15 +29,32 @@ export function buildTemplate(schema = {}, opts = {}) {
       ? '<script src="https://unpkg.com/@rive-app/webgl"></script>'
       : '<script src="https://unpkg.com/@rive-app/canvas"></script>';
 
+  // URL param setters for OBS (vm.*)
   const urlSetters = vprops.map(setterLine).filter(Boolean).join("\n      ");
+
+  // Bake defaults for OBS (optional)
   const vmDefaultsLines = vmDefaults
     ? Object.keys(vmDefaults).map((name) => bakeDefaultLine(name, vmDefaults[name])).join("\n      ")
     : "";
 
-  // IMPORTANT: do NOT put the base64 inside a JS string. Put it as text content of a non-executed <script>.
+  // Embed .riv safely (not inside a JS string)
   const b64Tag = embed
     ? `<script type="application/octet-stream" id="riv-b64">${rivBase64.replace(/<\/script/gi, '<\\/script')}</script>`
     : `<script type="application/octet-stream" id="riv-b64"></script>`;
+
+  // Early stub to capture ADD data before our page JS/runtimes load
+  const earlyStub = `
+<script>
+// Capture data calls that might arrive before the page JS is ready.
+(function(){
+  if (!window.__caspar) window.__caspar = { q: [] };
+  var q = window.__caspar.q;
+  // Stubs push raw payloads; real handler will drain later.
+  window.update  = function(payload){ q.push(['update', payload]); };
+  window.data    = window.update;
+  window.SetData = window.update;
+})();
+</script>`;
 
   // OBS timer helper
   const obsOnly = mode === "obs" ? `
@@ -53,9 +73,15 @@ export function buildTemplate(schema = {}, opts = {}) {
       }, Math.max(0, startMs));
     }` : "";
 
-  // Caspar API (inserted exactly once, at the end of the IIFE)
+  // Caspar API: robust parse + early-call capture + queue + first-play guard
   const casparApi = mode === "caspar" ? `
-    // --- Robust UPDATE: handles XML & lenient JSON (Caspar variations) ---
+    // --- Robust UPDATE + early-call capture + first-play guard ---
+    var __hasUpdatedOnce = false;
+    var __firstPlayPending = false;
+    var __firstPlayTimer = null;
+    var __firstPlayWaitMs = 250; // adjust if needed
+    var __pendingUpdates = [];   // holds parsed objects until vmi exists
+
     function textByTag(root, tag){
       try { var el = root.getElementsByTagName(tag)[0]; return el ? (el.textContent || '') : ''; } catch(e){ return ''; }
     }
@@ -83,6 +109,22 @@ export function buildTemplate(schema = {}, opts = {}) {
       return s;
     }
     function escapeBareNewlinesInJson(s){ return String(s).replace(/\\r?\\n/g, '\\\\n'); }
+    function normalizeCasparJsonObject(o){
+      if (!o || typeof o !== 'object') return {};
+      var td = o.templateData || o.templatedata;
+      if (td){
+        var arr = td.componentData || td.componentdata || [];
+        var map = {};
+        for (var i=0;i<arr.length;i++){
+          var it = arr[i] || {};
+          var id = it.id || it.componentId || it.name;
+          var val = (it.data && (it.data.value!=null ? it.data.value : it.data.text)) || it.value || '';
+          if (id) map[id] = String(val);
+        }
+        return map;
+      }
+      return o; // assume already flat map
+    }
     function parseCasparJsonStrict(s){
       var o = (typeof s === 'string') ? JSON.parse(s) : s;
       return normalizeCasparJsonObject(o);
@@ -106,24 +148,14 @@ export function buildTemplate(schema = {}, opts = {}) {
         }
       }
     }
-    function normalizeCasparJsonObject(o){
-      if (!o || typeof o !== 'object') return {};
-      var td = o.templateData || o.templatedata;
-      if (td){
-        var arr = td.componentData || td.componentdata || [];
-        var map = {};
-        for (var i=0;i<arr.length;i++){
-          var it = arr[i] || {};
-          var id = it.id || it.componentId || it.name;
-          var val = (it.data && (it.data.value!=null ? it.data.value : it.data.text)) || it.value || '';
-          if (id) map[id] = String(val);
-        }
-        return map;
-      }
-      return o; // assume already flat map
+
+    function __doPlayNow(){
+      try { if (r && r.play) r.play(); } catch(e){}
+      ${casparTriggers.in ? `fireVmTrigger(${JSON.stringify(casparTriggers.in)});` : ""}
     }
 
-    window.update = function(raw){
+    // Real handlers (replace early stubs)
+    function __realUpdate(raw){
       try{
         if (raw == null) return;
         var obj = {};
@@ -134,20 +166,42 @@ export function buildTemplate(schema = {}, opts = {}) {
         } else if (typeof raw === 'object') {
           obj = parseCasparJsonLenient(raw);
         }
+        if (!vmi){ __pendingUpdates.push(obj); return; }
         apply(obj);
+        __hasUpdatedOnce = true;
+        if (__firstPlayPending){
+          __firstPlayPending = false;
+          if (__firstPlayTimer){ clearTimeout(__firstPlayTimer); __firstPlayTimer = null; }
+          __doPlayNow();
+        }
       } catch(e){ console.error("UPDATE parse error", e); }
-    };
-    // Common aliases some clients use
-    window.data = window.update;
-    window.SetData = window.update;
+    }
+    window.update  = __realUpdate;
+    window.data    = __realUpdate;
+    window.SetData = __realUpdate;
 
-    window.play   = function(){ try { if (r && r.play) r.play(); } catch(e){} fireVmTrigger("${esc(casparTriggers.in || "IN")}"); };
-    window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger("${esc(casparTriggers.next)}");` : ''} };
-    window.stop   = function(){ var fired = fireVmTrigger("${esc(casparTriggers.out || "OUT")}"); if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
+    window.play = function(){
+      // If we haven't seen an update yet, give it a short window to arrive.
+      if (!__hasUpdatedOnce){
+        __firstPlayPending = true;
+        if (!__firstPlayTimer){
+          __firstPlayTimer = setTimeout(function(){
+            if (__firstPlayPending){
+              __firstPlayPending = false;
+              __doPlayNow(); // proceed with defaults if nothing arrived
+            }
+          }, __firstPlayWaitMs);
+        }
+        return;
+      }
+      __doPlayNow();
+    };
+    window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger(${JSON.stringify(casparTriggers.next)});` : ""} };
+    window.stop   = function(){ var fired = ${casparTriggers.out ? `fireVmTrigger(${JSON.stringify(casparTriggers.out)})` : `false`}; if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
     window.remove = function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} };
   ` : "";
 
-  // Precompute VM maps
+  // Precompute VM maps (case-insensitive mapping support)
   const vmIndexLiteral = '{' + vprops.map(p => `"${p.name.toLowerCase()}":"${esc(p.name)}"`).join(',') + '}';
   const vmTypesLiteral = '{' + vprops.map(p => `"${esc(p.name)}":"${p.type}"`).join(',') + '}';
 
@@ -167,6 +221,7 @@ export function buildTemplate(schema = {}, opts = {}) {
 <body>
   <div id="stage"><canvas id="cg" width="1920" height="1080"></canvas></div>
   ${b64Tag}
+  ${earlyStub}
   ${runtimeScript}
   <script>
   (function(){
@@ -228,11 +283,12 @@ export function buildTemplate(schema = {}, opts = {}) {
     var ab  = params.get("artboard") || params.get("ab") || (DEF.artboard || undefined);
     var sm  = params.get("sm") || params.get("statemachine") || (DEF.sm || undefined);
 
-    var trigIn  = ${JSON.stringify(casparTriggers.in || null)};
-    var trigOut = ${JSON.stringify(casparTriggers.out || null)};
+    ${mode === "obs" ? `
+    var trigIn  = params.get("in")  || null;
+    var trigOut = params.get("out") || null;
     var startMs    = num(params.get("startMs"), DEF.startMs);
     var outAfterMs = num(params.get("outAfterMs"), DEF.outAfterMs);
-    var clearAfterMs = num(params.get("clearAfterMs"), DEF.clearAfterMs);
+    var clearAfterMs = num(params.get("clearAfterMs"), DEF.clearAfterMs);` : ""}
 
     function applyFromUrl(){
       if (!vmi) return;
@@ -269,6 +325,25 @@ export function buildTemplate(schema = {}, opts = {}) {
             try { vmi = r && r.viewModelInstance ? r.viewModelInstance : null; } catch(e){ vmi = null; }
             try { applyBakedDefaults(); } catch(e){}
             try { applyFromUrl(); } catch(e){}
+
+            // Drain any early stubs captured before our JS loaded
+            try {
+              var earlyQ = (window.__caspar && window.__caspar.q) ? window.__caspar.q : [];
+              for (var i=0;i<earlyQ.length;i++){
+                if (earlyQ[i][0] === 'update') { __realUpdate(earlyQ[i][1]); }
+              }
+              if (window.__caspar) window.__caspar.q = [];
+            } catch(e){}
+
+            // Apply any parsed updates that arrived before vmi existed
+            try {
+              if (typeof __pendingUpdates !== 'undefined' && __pendingUpdates && __pendingUpdates.length){
+                for (var j=0;j<__pendingUpdates.length;j++) apply(__pendingUpdates[j]);
+                __pendingUpdates.length = 0;
+                if (typeof __hasUpdatedOnce !== 'undefined') __hasUpdatedOnce = true;
+              }
+            } catch(e){}
+
             ${mode === "obs" ? "scheduleInOut();" : ""}
             try { window.addEventListener("resize", function(){ try { if (r && r.resizeDrawingSurfaceToCanvas) r.resizeDrawingSurfaceToCanvas(); } catch(e){} }); } catch(e){}
           }
@@ -281,11 +356,15 @@ export function buildTemplate(schema = {}, opts = {}) {
     function apply(o){
       if (!o || !vmi) return;
 
-      // Prefer fast path for exact-name props we inlined (still present if generated)
+      // Fast path for known props (exact-name setters)
       ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
 
       // Generic, case-insensitive fallback
       try {
+        // VM name maps are injected from the generator:
+        var VM_INDEX = ${vmIndexLiteral};
+        var VM_TYPES = ${vmTypesLiteral};
+
         for (var k in o) {
           if (!o.hasOwnProperty(k)) continue;
           var name = k;
@@ -329,10 +408,11 @@ export function buildTemplate(schema = {}, opts = {}) {
   return html;
 }
 
-// helpers
+// helpers for the generator (Node/Browser-safe)
 function numOr(x, d){ return (typeof x === "number" && isFinite(x)) ? x : d; }
 function esc(s){ return String(s).replace(/["\\]/g, (m) => "\\" + m); }
 
+// OBS URL param → VM setter lines (inserted in template)
 function setterLine(p){
   const key = `vm.${p.name}`;  // exact (case-sensitive) URL key
   const safe = esc(p.name);
@@ -349,6 +429,7 @@ function setterLine(p){
   return "";
 }
 
+// Caspar UPDATE exact-name setters (fast path)
 function setterUpdateLine(p){
   const safe = esc(p.name);
   if (p.type === "trigger")
@@ -364,6 +445,7 @@ function setterUpdateLine(p){
   return "";
 }
 
+// Bake default VM values for OBS (stringly-typed; converted at runtime)
 function bakeDefaultLine(name, value){
   const safe = esc(name);
   return `try { var it=vmi && vmi.string ? vmi.string("${safe}") : null; if (it) it.value = String(${JSON.stringify(String(value))}); } catch(e){}`;
