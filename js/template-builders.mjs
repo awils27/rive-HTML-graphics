@@ -34,8 +34,8 @@ export function buildTemplate(schema = {}, opts = {}) {
 
   const runtimeScript =
     runtime === "webgl"
-      ? '<script src="https://unpkg.com/@rive-app/webgl@2.18.1"></script>'
-      : '<script src="https://unpkg.com/@rive-app/canvas@2.18.1"></script>';
+      ? '<script src="https://unpkg.com/@rive-app/webgl"></script>'
+      : '<script src="https://unpkg.com/@rive-app/canvas"></script>';
 
   const urlSetters = vprops.map(setterLine).filter(Boolean).join("\n      ");
   const vmDefaultsLines = vmDefaults
