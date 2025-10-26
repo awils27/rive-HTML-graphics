@@ -2,7 +2,7 @@
 import { $, sanitizeFilename, downloadBlob, fileToBase64 } from './utils.mjs';
 import { buildTemplate } from './template-builders.mjs';
 import { inspectContents, buildSchema } from './rive-introspect.mjs';
-import { downloadCasparPresetXml } from './preset.mjs';
+import { downloadCasparClientPresetXml } from './preset.mjs';
 
 const els = {
   file:       $('#rivfile'),
@@ -222,10 +222,11 @@ els.dlCaspar.addEventListener('click', async () => {
 });
 
 els.dlCasparXml.addEventListener('click', () => {
-  if (!schema) return;
-  const htmlName = `caspar-${baseName}.html`;
-  downloadCasparPresetXml(schema, htmlName);
-  els.status.textContent = 'Downloaded preset.';
+   if (!schema) return;
+   const htmlName = `caspar-${baseName}.html`;
+   // layer & sendAsJson can be surfaced in the UI later; defaults match your old builder
+   downloadCasparClientPresetXml(schema, htmlName, { layer: 20, sendAsJson: true });
+   els.status.textContent = 'Downloaded preset.';
 });
 
 els.dlObs.addEventListener('click', async () => {
