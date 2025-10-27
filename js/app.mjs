@@ -1,267 +1,216 @@
 // public/js/app.mjs
-import { $, sanitizeFilename, downloadBlob, fileToBase64 } from './utils.mjs';
-import { buildTemplate } from './template-builders.mjs';
+// Caspar-only front-end. Safe if optional controls are missing.
+
 import { inspectContents, buildSchema } from './rive-introspect.mjs';
+import { buildTemplate } from './template-builders.mjs';
+import { downloadBlob } from './utils.mjs';
 import { downloadCasparClientPresetXml } from './preset.mjs';
 
-const els = {
-  file:       $('#rivfile'),
-  fileStatus: $('#fileStatus'),
-  detected:   $('#detected'),
-  artSel:     $('#artSel'),
-  smSel:      $('#smSel'),
-  vmTable:    $('#vmTable'),
-  vmBody:     $('#vmBody'),
-  vmEmpty:    $('#vmEmpty'),
+// ---------- tiny DOM helpers ----------
+function $(id) { return document.getElementById(id); }
+function on(el, ev, fn) { if (el) el.addEventListener(ev, fn); }
+function setText(el, s) { if (el) el.textContent = s; }
 
-  tabCaspar:  $('#tabCaspar'),
-  tabObs:     $('#tabObs'),
-  panelCaspar:$('#caspar'),
-  panelObs:   $('#obs'),
+// ---------- UI elements (all optional except #file) ----------
+const elFile       = $('file');          // <input type="file" accept=".riv">
+const elArtSel     = $('artSel');        // <select> (optional)
+const elSmSel      = $('smSel');         // <select> (optional)
+const elRuntimeSel = $('runtimeSel');    // <select id="runtimeSel"> canvas|webgl (optional)
+const elEmbedCk    = $('embedCheckbox'); // <input type="checkbox" (optional)
+const elBtnHtml    = $('btnHtml');       // Download Caspar HTML (optional but useful)
+const elBtnPreset  = $('btnPreset');     // Download Caspar XML preset (optional)
+const elStatus     = $('status');        // <small id="status"> (optional)
+const elVmTable    = $('vmTable');       // <table> to preview VM props (optional)
 
-  rtRadios:   [...document.querySelectorAll('input[name="rt"]')],
-  embedCaspar:$('#embedCaspar'),
-  inTrig:     $('#inTrig'),
-  outTrig:    $('#outTrig'),
-  nextTrig:   $('#nextTrig'),
-  dlCaspar:   $('#dlCaspar'),
-  dlCasparXml:$('#dlCasparXml'),
-  status:     $('#status'),
-
-  embedObs:   $('#embedObs'),
-  startMs:    $('#startMs'),
-  outAfterMs: $('#outAfterMs'),
-  bakeDefaults: $('#bakeDefaults'),
-  dlObs:      $('#dlObs'),
-  paramsOut:  $('#paramsOut'),
-  copyParams: $('#copyParams'),
-};
-
-// state
-let file = null, blobURL = null, contents = null, schema = null;
-let currentArt = '', currentSM = '';
+// ---------- working state ----------
+let file    = null;
+let blobURL = null;
+let contents = null; // from inspectContents
+let schema   = null; // from buildSchema
 let baseName = 'graphic';
 
-function populateSelect(select, items, includeNone=false){
+// safe URL.revokeObjectURL
+function revokeBlob() {
+  try { if (blobURL) URL.revokeObjectURL(blobURL); } catch {}
+  blobURL = null;
+}
+
+function filenameBase(name) {
+  return String(name || 'graphic').replace(/\.[^.]+$/,'');
+}
+
+async function fileToBase64(f) {
+  const buf = await f.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function runtimeValue() {
+  // default canvas if selector missing
+  const v = elRuntimeSel ? String(elRuntimeSel.value || '').toLowerCase() : 'canvas';
+  return (v === 'webgl') ? 'webgl' : 'canvas';
+}
+
+function embedChecked() {
+  // default false if checkbox missing
+  return !!(elEmbedCk && elEmbedCk.checked);
+}
+
+function populateSelect(select, items) {
+  if (!select) return;
   const prev = select.value;
   select.innerHTML = '';
-  if (includeNone) {
+  items.forEach(name => {
     const opt = document.createElement('option');
-    opt.textContent = '(none)'; opt.value = '';
-    select.appendChild(opt);
-  }
-  items.forEach(v => {
-    const opt = document.createElement('option');
-    opt.textContent = v; opt.value = v;
+    opt.value = name;
+    opt.textContent = name;
     select.appendChild(opt);
   });
-  if (items.includes(prev)) select.value = prev;
+  // restore if still present
+  if (prev && items.includes(prev)) select.value = prev;
 }
 
-function renderProps(vprops){
-  const body = els.vmBody;
-  body.innerHTML = '';
-  if (!vprops?.length) {
-    els.vmTable.style.display='none'; els.vmEmpty.style.display='block';
+function updateVmTable(list) {
+  if (!elVmTable) return;
+  // expect a <tbody> inside #vmTable (fallback if not)
+  const tbody = elVmTable.tBodies && elVmTable.tBodies[0] ? elVmTable.tBodies[0] : elVmTable;
+  tbody.innerHTML = '';
+  (list || []).forEach(p => {
+    const tr = document.createElement('tr');
+    const tdN = document.createElement('td');
+    const tdT = document.createElement('td');
+    const tdD = document.createElement('td');
+    tdN.textContent = p.name;
+    tdT.textContent = p.type;
+    tdD.textContent = (p.value == null) ? '' : String(p.value);
+    tr.appendChild(tdN); tr.appendChild(tdT); tr.appendChild(tdD);
+    tbody.appendChild(tr);
+  });
+}
+
+async function analyzeSelectedFile() {
+  if (!file) return;
+  setText(elStatus, 'Loading Rive…');
+
+  revokeBlob();
+  blobURL = URL.createObjectURL(file);
+  baseName = filenameBase(file.name);
+
+  try {
+    // Discover artboards/state machines
+    contents = await inspectContents(blobURL);
+  } catch (e) {
+    console.error(e);
+    setText(elStatus, 'Failed to open Rive (see console).');
     return;
   }
-  els.vmTable.style.display=''; els.vmEmpty.style.display='none';
-  vprops.slice().sort((a,b)=>a.name.localeCompare(b.name)).forEach(p => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td><code>${p.name}</code></td><td>${p.type}</td><td>${p.value ?? ''}</td>`;
-    body.appendChild(tr);
-  });
-}
 
-function buildParamsPreview(){
-  if (!schema) { els.paramsOut.value = ''; return; }
-  const sp = new URLSearchParams();
-  if (currentArt) sp.set('artboard', currentArt);
-  if (currentSM)  sp.set('sm', currentSM);
-  const start = Math.max(0, parseInt(els.startMs.value || '0', 10) || 0);
-  const outA  = Math.max(0, parseInt(els.outAfterMs.value || '0', 10) || 0);
-  sp.set('startMs', String(start));
-  if (outA > 0) sp.set('outAfterMs', String(outA));
-  if (els.bakeDefaults.checked){
-    (schema.viewModelProps || []).forEach(p => {
-      if (p.type === 'trigger') return;
-      if (p.value == null) return;
-      sp.set('vm.'+p.name, String(p.value));
-    });
+  // Pull names (best-effort; contents API may vary by version)
+  const artboards = (contents && contents.artboards ? contents.artboards : contents?.data?.artboards) || [];
+  const artNames = artboards.map(a => a.name || a);
+  populateSelect(elArtSel, artNames);
+
+  const sms = (contents && contents.stateMachines ? contents.stateMachines : contents?.data?.stateMachines) || [];
+  const smNames = sms.map(s => s.name || s);
+  populateSelect(elSmSel, smNames);
+
+  // Pick current selection (if selects missing, pass undefined)
+  const artSel = elArtSel ? elArtSel.value : (artNames[0] || undefined);
+  const smSel  = elSmSel ? elSmSel.value  : (smNames[0] || undefined);
+
+  // Build view model schema using chosen artboard/state machine
+  try {
+    schema = await buildSchema(blobURL, undefined, artSel, smSel);
+  } catch (e) {
+    console.error(e);
+    setText(elStatus, 'Failed to build schema (see console).');
+    return;
   }
-  const qs = sp.toString();
-  els.paramsOut.value = qs ? '?' + qs : '';
+
+  updateVmTable(schema.viewModelProps || []);
+  setText(elStatus, 'Rive ready.');
 }
 
-// tabs
-function selectTab(which){
-  const selCaspar = which === 'caspar';
-  els.tabCaspar.setAttribute('aria-selected', selCaspar ? 'true':'false');
-  els.tabObs.setAttribute('aria-selected', selCaspar ? 'false':'true');
-  els.panelCaspar.hidden = !selCaspar;
-  els.panelObs.hidden = selCaspar;
-}
-els.tabCaspar.addEventListener('click', e => { e.preventDefault(); selectTab('caspar'); });
-els.tabObs.addEventListener('click', e => { e.preventDefault(); selectTab('obs'); });
-
-// file selection
-els.file.addEventListener('change', async () => {
-  const f = els.file.files?.[0];
-  if (!f){ els.fileStatus.textContent = 'No file selected.'; return; }
+// ---------- event wiring (SAFE) ----------
+on(elFile, 'change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
   file = f;
-  baseName = (file.name || 'graphic').replace(/\.riv$/i,'');
-  els.fileStatus.textContent = 'Reading…';
-  schema = null;
-
-  if (blobURL) URL.revokeObjectURL(blobURL);
-  blobURL = URL.createObjectURL(file);
-
-  try { contents = await inspectContents(blobURL); }
-  catch(e){ console.error(e); alert('Failed to read the Rive file.'); return; }
-
-  // artboards
-  const artNames = (contents?.artboards || []).map(a => a.name);
-  currentArt = artNames[0] || '';
-  populateSelect(els.artSel, artNames);
-  els.artSel.value = currentArt;
-
-  // SMs for current art
-  const art = (contents?.artboards || []).find(a => a.name === currentArt);
-  const smNames = (art?.stateMachines || []).map(sm => sm.name);
-  currentSM = smNames[0] || '';
-  populateSelect(els.smSel, smNames);
-  els.smSel.value = currentSM;
-
-  // build schema
-  try { schema = await buildSchema(blobURL, undefined, currentArt, currentSM); }
-  catch(e){ console.error(e); alert('Failed to initialize Rive for this artboard/SM.'); return; }
-
-  renderProps(schema.viewModelProps);
-
-  // triggers
-  const tNames = (schema.viewModelProps || []).filter(p => p.type === 'trigger').map(p => p.name);
-  populateSelect(els.inTrig,  ['(none)', ...tNames]); els.inTrig.value = '';
-  populateSelect(els.outTrig, ['(none)', ...tNames]); els.outTrig.value = '';
-  populateSelect(els.nextTrig,['(none)', ...tNames]); els.nextTrig.value = '';
-
-  els.detected.style.display = 'block';
-  els.dlCaspar.disabled = false;
-  els.dlCasparXml.disabled = false;
-  els.dlObs.disabled = false;
-
-  buildParamsPreview();
+  await analyzeSelectedFile();
 });
 
-els.artSel.addEventListener('change', async () => {
-  currentArt = els.artSel.value;
-  const art = (contents?.artboards || []).find(a => a.name === currentArt);
-  const smNames = (art?.stateMachines || []).map(sm => sm.name);
-  currentSM = smNames[0] || '';
-  populateSelect(els.smSel, smNames);
-  els.smSel.value = currentSM;
-
-  try { schema = await buildSchema(blobURL, undefined, currentArt, currentSM); }
-  catch(e){ console.error(e); alert('Failed to initialize Rive for this artboard/SM.'); return; }
-  renderProps(schema.viewModelProps);
-
-  const tNames = (schema.viewModelProps || []).filter(p => p.type === 'trigger').map(p => p.name);
-  populateSelect(els.inTrig,  ['(none)', ...tNames]); els.inTrig.value = '';
-  populateSelect(els.outTrig, ['(none)', ...tNames]); els.outTrig.value = '';
-  populateSelect(els.nextTrig,['(none)', ...tNames]); els.nextTrig.value = '';
-
-  buildParamsPreview();
-});
-
-els.smSel.addEventListener('change', async () => {
-  currentSM = els.smSel.value;
-  try { schema = await buildSchema(blobURL, undefined, currentArt, currentSM); }
-  catch(e){ console.error(e); alert('Failed to initialize Rive for this state machine.'); return; }
-  renderProps(schema.viewModelProps);
-  const tNames = (schema.viewModelProps || []).filter(p => p.type === 'trigger').map(p => p.name);
-  populateSelect(els.inTrig,  ['(none)', ...tNames]); els.inTrig.value = '';
-  populateSelect(els.outTrig, ['(none)', ...tNames]); els.outTrig.value = '';
-  populateSelect(els.nextTrig,['(none)', ...tNames]); els.nextTrig.value = '';
-  buildParamsPreview();
-});
-
-['input','change'].forEach(evt => {
-  els.startMs.addEventListener(evt, buildParamsPreview);
-  els.outAfterMs.addEventListener(evt, buildParamsPreview);
-  els.bakeDefaults.addEventListener(evt, buildParamsPreview);
-});
-
-// downloads
-els.dlCaspar.addEventListener('click', async () => {
-  if (!schema) return;
-  els.status.textContent = 'Generating…';
-
-  let base64 = "";
-  if (els.embedCaspar.checked) {
-    try { base64 = await fileToBase64(file); } catch(e){ alert('Base64 encode failed'); return; }
+on(elArtSel, 'change', async () => {
+  if (!file || !blobURL) return;
+  // Rebuild schema with new artboard
+  const artSel = elArtSel.value || undefined;
+  const smSel  = elSmSel ? elSmSel.value : undefined;
+  try {
+    schema = await buildSchema(blobURL, undefined, artSel, smSel);
+    updateVmTable(schema.viewModelProps || []);
+  } catch (e) {
+    console.error(e);
+    setText(elStatus, 'Failed to rebuild schema (see console).');
   }
-
-  const rt = (els.rtRadios.find(r => r.checked)?.value) || 'canvas';
-  const html = buildTemplate(schema, {
-    mode: 'caspar',
-    runtime: rt,
-    embed: !!els.embedCaspar.checked,
-    base64,
-    rivPath: file?.name || 'graphics.riv',
-    artboard: currentArt,
-    stateMachine: currentSM,
-    casparTriggers: {
-      in:  els.inTrig.value || null,
-      out: els.outTrig.value || null,
-      next: els.nextTrig.value || null
-    }
-  });
-
-  const name = sanitizeFilename(`caspar-${baseName}.html`);
-  downloadBlob(new Blob([html], { type: 'text/html' }), name);
-  els.status.textContent = 'Downloaded.';
 });
 
-els.dlCasparXml.addEventListener('click', () => {
-   if (!schema) return;
-   const htmlName = `caspar-${baseName}.html`;
-   // layer & sendAsJson can be surfaced in the UI later; defaults match your old builder
-   downloadCasparClientPresetXml(schema, htmlName, { layer: 20, sendAsJson: true });
-   els.status.textContent = 'Downloaded preset.';
+on(elSmSel, 'change', async () => {
+  if (!file || !blobURL) return;
+  // Rebuild schema with new state machine
+  const artSel = elArtSel ? elArtSel.value : undefined;
+  const smSel  = elSmSel.value || undefined;
+  try {
+    schema = await buildSchema(blobURL, undefined, artSel, smSel);
+    updateVmTable(schema.viewModelProps || []);
+  } catch (e) {
+    console.error(e);
+    setText(elStatus, 'Failed to rebuild schema (see console).');
+  }
 });
 
-els.dlObs.addEventListener('click', async () => {
-  if (!schema) return;
-  const embed = !!els.embedObs.checked;
-  let base64 = "";
+on(elBtnHtml, 'click', async () => {
+  if (!schema) { setText(elStatus, 'Load a .riv first.'); return; }
+
+  const useWebGL = (runtimeValue() === 'webgl');
+  const embed = embedChecked();
+
+  let base64 = '';
+  let rivPath = '';
   if (embed) {
-    try { base64 = await fileToBase64(file); } catch(e){ alert('Base64 encode failed'); return; }
+    if (!file) { setText(elStatus, 'Select a .riv to embed.'); return; }
+    base64 = await fileToBase64(file);
+  } else {
+    // When not embedding, we put the filename in the HTML for Caspar to read from disk.
+    rivPath = file ? file.name : 'graphic.riv';
   }
-  const vmDefaults = els.bakeDefaults.checked
-    ? Object.fromEntries((schema.viewModelProps || [])
-        .filter(p => p.type !== 'trigger' && p.value != null)
-        .map(p => [p.name, String(p.value)]))
-    : null;
 
   const html = buildTemplate(schema, {
-    mode: 'obs',
+    runtime: useWebGL ? 'webgl' : 'canvas',
     embed,
     base64,
-    rivPath: file?.name || 'graphics.riv',
-    artboard: currentArt,
-    stateMachine: currentSM,
-    timers: {
-      startMs: Math.max(0, parseInt(els.startMs.value || '0', 10) || 0),
-      outAfterMs: Math.max(-1, parseInt(els.outAfterMs.value || '-1', 10) || -1),
-      clearAfterMs: -1
-    },
-    vmDefaults
+    rivPath,
+    casparTriggers: {
+      in:  $('inTrigger')  ? $('inTrigger').value  : null,
+      out: $('outTrigger') ? $('outTrigger').value : null,
+      next:$('nextTrigger')? $('nextTrigger').value: null,
+    }
+    // vmDefaults: { } // optional baked defaults for testing
   });
 
-  const name = sanitizeFilename(`obs-${baseName}${embed ? '.embedded' : ''}.html`);
-  downloadBlob(new Blob([html], { type: 'text/html' }), name);
+  const outName = `caspar-${baseName}.html`;
+  downloadBlob(new Blob([html], { type: 'text/html' }), outName);
+  setText(elStatus, `Downloaded ${outName}`);
 });
 
-// copy params
-els.copyParams.addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(els.paramsOut.value); els.copyParams.textContent='Copied!'; setTimeout(()=>els.copyParams.textContent='Copy', 900); } catch {}
+on(elBtnPreset, 'click', () => {
+  if (!schema) { setText(elStatus, 'Load a .riv first.'); return; }
+  const htmlName = `caspar-${baseName}.html`;
+  // XML is safer than JSON for ADD/UPDATE
+  downloadCasparClientPresetXml(schema, htmlName, { layer: 20, sendAsJson: false });
+  setText(elStatus, `Downloaded ${htmlName.replace(/\.html$/i, '.xml')}`);
 });
+
+// Optional: runtime / embed UI can exist or not; no listeners needed.
+
+window.addEventListener('beforeunload', revokeBlob);
