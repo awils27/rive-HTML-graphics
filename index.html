@@ -63,7 +63,7 @@
         </fieldset>
         <fieldset>
           <legend>Embed .riv?</legend>
-          <label><input type="checkbox" id="embedCaspar"> Inline Base64 (single file)</label>
+          <label><input type="checkbox" id="embedCaspar" checked> Inline Base64 (single file)</label>
         </fieldset>
       </div>
       <div class="grid-2">
@@ -88,36 +88,6 @@
         <button id="dlCaspar" class="contrast" disabled>Download Caspar HTML</button>
         <button id="dlCasparXml" class="secondary" disabled>Download Caspar XML</button>
         <small id="status" class="muted" aria-live="polite"></small>
-      </footer>
-    </article>
-  </section>
-
-  <!-- OBS -->
-  <section id="obs" role="tabpanel" aria-labelledby="tabObs" hidden>
-    <article>
-      <div class="grid-2">
-        <fieldset>
-          <legend>Embed .riv?</legend>
-          <label><input type="checkbox" id="embedObs" checked> Inline Base64 (single file)</label>
-        </fieldset>
-        <fieldset>
-          <legend>Timers (ms)</legend>
-          <label>Start<input id="startMs" class="mono" type="number" min="0" step="50" value="0"></label>
-          <label>Out after<input id="outAfterMs" class="mono" type="number" min="0" step="50" value="3000"></label>
-        </fieldset>
-      </div>
-
-      <details>
-        <summary><strong>Bake VM defaults into HTML</strong></summary>
-        <label><input id="bakeDefaults" type="checkbox" checked> Include current VM defaults</label>
-      </details>
-
-      <footer style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
-        <button id="dlObs" class="contrast" disabled>Download OBS HTML</button>
-        <div style="flex:1"></div>
-        <label>Parameters (copy & append)</label>
-        <input id="paramsOut" class="mono" type="text" readonly style="flex:1" />
-        <button id="copyParams">Copy</button>
       </footer>
     </article>
   </section>
