@@ -11,17 +11,17 @@ const setText = (el, s) => { if (el) el.textContent = s; };
 const enable = (el, yes = true) => { if (el) el.disabled = !yes; };
 const show = (el, yes = true) => { if (el) el.style.display = yes ? '' : 'none'; };
 
-// ---------- Elements (match your index.html) ----------
+// ---------- Elements (match index.html) ----------
 let elFile, elFileStatus, elDetected, elArtSel, elSmSel;
-let elVmTable, elVmBody;
+let elVmBody;
 let elInTrig, elOutTrig, elNextTrig;
 let elEmbed, elBtnHtml, elBtnXml, elStatus;
 
 // ---------- State ----------
 let file = null;
 let blobURL = null;
-let contents = null;
-let schema = null;
+let contents = null; // result of contents()
+let schema = null;   // result of buildSchema()
 let baseName = 'graphic';
 
 // ---------- Utils ----------
@@ -38,17 +38,20 @@ function currentRuntime() {
   const v = picked ? picked.value : 'canvas';
   return (String(v).toLowerCase() === 'webgl') ? 'webgl' : 'canvas';
 }
-function populateSelect(sel, items) {
+function populateSelect(sel, items, { placeholder = "— select —" } = {}) {
   if (!sel) return;
-  const prev = sel.value;
   sel.innerHTML = '';
-  items.forEach((name) => {
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = placeholder;
+  sel.appendChild(ph);
+  (items || []).forEach((name) => {
     const o = document.createElement('option');
     o.value = name;
     o.textContent = name;
     sel.appendChild(o);
   });
-  if (prev && items.includes(prev)) sel.value = prev;
+  sel.value = ''; // never auto-select
 }
 function updateVmTable(list) {
   if (!elVmBody) return;
@@ -61,24 +64,34 @@ function updateVmTable(list) {
 }
 function populateTriggers(list) {
   const names = (list || []).filter(p => p.type === 'trigger').map(p => p.name);
-  [elInTrig, elOutTrig, elNextTrig].forEach(sel => populateSelect(sel, names));
+  [elInTrig, elOutTrig, elNextTrig].forEach(sel => populateSelect(sel, names, { placeholder: '— optional —' }));
+}
+function getArtboardNames(c) {
+  const arr = (c && Array.isArray(c.artboards)) ? c.artboards : (c?.data?.artboards || []);
+  return arr.map(a => a?.name ?? a).filter(Boolean);
+}
+function getStateMachineNamesForArtboard(c, artName) {
+  if (!c || !artName) return [];
+  const abs = Array.isArray(c.artboards) ? c.artboards : (c?.data?.artboards || []);
+  const ab = abs.find(a => (a?.name ?? a) === artName);
+  if (!ab) return [];
+  const sms = Array.isArray(ab.stateMachines) ? ab.stateMachines : [];
+  return sms.map(s => s?.name ?? s).filter(Boolean);
 }
 
 // ---------- Core ----------
 async function analyzeSelectedFile() {
   if (!file) return;
 
-  // UI: file label
   setText(elFileStatus, file ? `${file.name} (${(file.size/1024/1024).toFixed(2)} MB)` : 'No file selected.');
 
-  // Build a blob URL for the runtime
   revokeBlob();
   blobURL = URL.createObjectURL(file);
   baseName = filenameBase(file.name);
 
   setText(elStatus, 'Loading Rive…');
 
-  // 1) Introspect for artboards / state machines
+  // 1) Introspect (no defaults, no schema yet)
   try {
     contents = await inspectContents(blobURL);
   } catch (e) {
@@ -87,56 +100,61 @@ async function analyzeSelectedFile() {
     return;
   }
 
-  const artboards = (contents?.artboards ?? contents?.data?.artboards ?? []).map(a => a.name ?? a);
-  const sms       = (contents?.stateMachines ?? contents?.data?.stateMachines ?? []).map(s => s.name ?? s);
+  // 2) Fill artboards; clear state machines
+  const artNames = getArtboardNames(contents);
+  populateSelect(elArtSel, artNames, { placeholder: '— choose artboard —' });
+  populateSelect(elSmSel, [], { placeholder: '— choose state machine —' });
 
-  populateSelect(elArtSel, artboards);
-  populateSelect(elSmSel, sms);
-
-  // 2) Build ViewModel schema using current selections (or first available)
-  const ab = elArtSel?.value || artboards[0] || undefined;
-  const sm = elSmSel?.value  || sms[0]       || undefined;
-
-  try {
-    schema = await buildSchema(blobURL, undefined, ab, sm);
-  } catch (e) {
-    console.error(e);
-    setText(elStatus, 'Failed to build schema (see console).');
-    return;
-  }
-
-  // 3) UI updates
-  updateVmTable(schema.viewModelProps || []);
-  populateTriggers(schema.viewModelProps || []);
+  // 3) UI state
+  schema = null;
+  updateVmTable([]);
+  populateTriggers([]);
   show(elDetected, true);
-  enable(elBtnHtml, true);
-  enable(elBtnXml, true);
-  setText(elStatus, 'Rive ready.');
+  enable(elBtnHtml, false);
+  enable(elBtnXml, false);
+  setText(elStatus, 'Choose an artboard, then a state machine.');
 }
 
-async function rebuildSchemaFromSelections() {
+async function maybeBuildSchema() {
   if (!file || !blobURL) return;
-  const ab = elArtSel?.value || undefined;
-  const sm = elSmSel?.value  || undefined;
+  const ab = elArtSel?.value || '';
+  const sm = elSmSel?.value  || '';
+  if (!ab || !sm) {
+    schema = null;
+    updateVmTable([]);
+    populateTriggers([]);
+    enable(elBtnHtml, false);
+    enable(elBtnXml, false);
+    setText(elStatus, 'Choose an artboard, then a state machine.');
+    return;
+  }
   try {
     schema = await buildSchema(blobURL, undefined, ab, sm);
     updateVmTable(schema.viewModelProps || []);
     populateTriggers(schema.viewModelProps || []);
+    enable(elBtnHtml, true);
+    enable(elBtnXml, true);
+    setText(elStatus, 'Rive ready.');
   } catch (e) {
     console.error(e);
-    setText(elStatus, 'Failed to rebuild schema (see console).');
+    schema = null;
+    updateVmTable([]);
+    populateTriggers([]);
+    enable(elBtnHtml, false);
+    enable(elBtnXml, false);
+    setText(elStatus, 'Failed to build schema (see console).');
   }
 }
 
 // ---------- Event wiring ----------
 function wire() {
   // Elements
+  const elVmTable = $('#vmTable');
   elFile       = $('#rivfile') || document.querySelector('input[type="file"]');
   elFileStatus = $('#fileStatus');
   elDetected   = $('#detected');
   elArtSel     = $('#artSel');
   elSmSel      = $('#smSel');
-  elVmTable    = $('#vmTable');
   elVmBody     = $('#vmBody') || (elVmTable ? elVmTable.querySelector('tbody') : null);
   elInTrig     = $('#inTrig');
   elOutTrig    = $('#outTrig');
@@ -152,7 +170,7 @@ function wire() {
     return;
   }
 
-  // Hide detected panel until parsed
+  // Initial UI
   show(elDetected, false);
   enable(elBtnHtml, false);
   enable(elBtnXml, false);
@@ -166,11 +184,20 @@ function wire() {
     await analyzeSelectedFile();
   });
 
-  on(elArtSel, 'change', rebuildSchemaFromSelections);
-  on(elSmSel, 'change', rebuildSchemaFromSelections);
+  on(elArtSel, 'change', () => {
+    // Populate SMs for chosen artboard; do not auto-select
+    const sms = getStateMachineNamesForArtboard(contents, elArtSel.value);
+    populateSelect(elSmSel, sms, { placeholder: '— choose state machine —' });
+    // With new artboard, we must rebuild only after SM is chosen
+    maybeBuildSchema();
+  });
+
+  on(elSmSel, 'change', () => {
+    maybeBuildSchema();
+  });
 
   on(elBtnHtml, 'click', async () => {
-    if (!schema) { setText(elStatus, 'Load a .riv first.'); return; }
+    if (!schema) { setText(elStatus, 'Select artboard & state machine first.'); return; }
 
     const runtime = currentRuntime();
     const embed = !!(elEmbed && elEmbed.checked);
@@ -181,7 +208,6 @@ function wire() {
       if (!file) { setText(elStatus, 'Select a .riv to embed.'); return; }
       base64 = await fileToBase64(file);
     } else {
-      // When not embedding, we put the filename for Caspar to load from disk
       rivPath = file ? file.name : 'graphic.riv';
     }
 
@@ -205,9 +231,8 @@ function wire() {
   });
 
   on(elBtnXml, 'click', () => {
-    if (!schema) { setText(elStatus, 'Load a .riv first.'); return; }
+    if (!schema) { setText(elStatus, 'Select artboard & state machine first.'); return; }
     const htmlName = `caspar-${baseName}.html`;
-    // XML avoids JSON newline/quoting pitfalls in Caspar's HTML Producer
     downloadCasparClientPresetXml(schema, htmlName, { layer: 20, sendAsJson: false });
     setText(elStatus, `Downloaded ${htmlName.replace(/\.html$/i, '.xml')}`);
   });

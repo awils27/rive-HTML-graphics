@@ -1,6 +1,6 @@
 // public/js/rive-introspect.mjs
 // Works with the UMD runtime on window/globalThis as injected by:
-// <script src="https://unpkg.com/@rive-app/canvas@2.18.1"></script>
+// <script src="https://unpkg.com/@rive-app/canvas@2.32.0"></script>
 
 function getRiveGlobal() {
   const R = (typeof globalThis !== "undefined" && globalThis.rive) ? globalThis.rive : null;
@@ -33,7 +33,7 @@ function coerceVMValue(type, raw) {
         return 0;
       }
       case "trigger": return null;
-      case "image":   return null; // images are set at runtime; default is null
+      case "image":   return null; // images are runtime-set; default is null
       default:        return raw;
     }
   } catch {
@@ -55,8 +55,15 @@ export async function inspectContents(src, canvas) {
         canvas: cv,
         autoplay: false,
         onLoad() {
-          try { resolve(r.contents); }
-          finally { try { r.cleanup && r.cleanup(); } catch {} }
+          Promise.resolve(
+            typeof r.contents === 'function' ? r.contents() : r.contents
+          ).then((data) => {
+            try { resolve(data); }
+            finally { try { r.cleanup && r.cleanup(); } catch {} }
+          }).catch((e) => {
+            try { r && r.cleanup && r.cleanup(); } catch {}
+            reject(e || new Error("Failed to read Rive contents()"));
+          });
         },
         onLoadError(e) {
           try { r && r.cleanup && r.cleanup(); } catch {}
@@ -99,8 +106,7 @@ export async function buildSchema(src, canvas, artboard, stateMachine) {
                     else if (p.type === "number")  raw = vmi?.number(p.name)?.value;
                     else if (p.type === "boolean") raw = vmi?.boolean(p.name)?.value;
                     else if (p.type === "color")   raw = vmi?.color(p.name)?.value;
-                    else if (p.type === "image")   raw = null; // images have no static default
-                    // triggers have no value
+                    else if (p.type === "image")   raw = null; // no static default
                   } catch {}
                   return { name: p.name, type: p.type, value: coerceVMValue(p.type, raw) };
                 })
