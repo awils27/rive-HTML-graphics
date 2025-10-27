@@ -1,13 +1,25 @@
 // public/js/template-builders.mjs
-// Generates single-file HTML templates for CasparCG and OBS (front-end only).
-// - Robust update handling (XML/JSON) with early-call capture & first-play guard
-// - Optional Base64 embedding of .riv (no network needed)
+// Generates a single-file HTML template for CasparCG (front-end only).
+// - Robust UPDATE handling (XML or lenient JSON)
+// - Early update() stub to capture ADD data before the page loads
+// - Queues updates until Rive/ViewModel are ready; drains before first PLAY
+// - Optional Base64 embedding of .riv (safe, no giant JS string)
 // - ES5-safe inline JS for Caspar's CEF
+// - Supports string/number/boolean/color/trigger/image ViewModel props
+//
+// Usage:
+//   const html = buildTemplate(schema, {
+//     runtime: "canvas" | "webgl",
+//     embed: true | false,
+//     base64: "<riv as base64>",   // required if embed=true
+//     rivPath: "./graphics.riv",   // used if embed=false
+//     casparTriggers: { in: "IN", out: "OUT", next: null },
+//     // optional baked defaults (mostly useful for testing)
+//     vmDefaults: { Title: "Hello", Headshot: "data:image/png;base64,..." },
+//   });
 
 export function buildTemplate(schema = {}, opts = {}) {
-  const mode = opts.mode || "caspar";                  // "caspar" | "obs"
-  if (!["caspar", "obs"].includes(mode)) throw new Error("mode must be caspar|obs");
-  const runtime = mode === "caspar" ? (opts.runtime || "canvas") : "canvas";
+  const runtime = opts.runtime === "webgl" ? "webgl" : "canvas";
 
   const artboard = schema.artboard || "";
   const stateMachine = schema.stateMachine || "";
@@ -18,10 +30,6 @@ export function buildTemplate(schema = {}, opts = {}) {
   const rivPath   = !embed ? (opts.rivPath || "./graphics.riv") : "";
 
   const casparTriggers = opts.casparTriggers || {};   // { in?, out?, next? }
-  const timers = opts.timers || {};
-  const startMs = numOr(timers.startMs, 0);
-  const outAfterMs = numOr(timers.outAfterMs, -1);
-  const clearAfterMs = numOr(timers.clearAfterMs, -1);
   const vmDefaults = opts.vmDefaults && typeof opts.vmDefaults === "object" ? opts.vmDefaults : null;
 
   const runtimeScript =
@@ -29,10 +37,9 @@ export function buildTemplate(schema = {}, opts = {}) {
       ? '<script src="https://unpkg.com/@rive-app/webgl"></script>'
       : '<script src="https://unpkg.com/@rive-app/canvas"></script>';
 
-  // URL param setters for OBS (vm.*)
+  // Optional URL param → VM setters (handy for quick tests)
   const urlSetters = vprops.map(setterLine).filter(Boolean).join("\n      ");
 
-  // Bake defaults for OBS (optional)
   const vmDefaultsLines = vmDefaults
     ? Object.keys(vmDefaults).map((name) => bakeDefaultLine(name, vmDefaults[name])).join("\n      ")
     : "";
@@ -42,7 +49,7 @@ export function buildTemplate(schema = {}, opts = {}) {
     ? `<script type="application/octet-stream" id="riv-b64">${rivBase64.replace(/<\/script/gi, '<\\/script')}</script>`
     : `<script type="application/octet-stream" id="riv-b64"></script>`;
 
-  // Early stub to capture ADD data before our page JS/runtimes load
+  // Early stub to capture ADD data before the page JS/runtimes load
   const earlyStub = `
 <script>
 // Capture data calls that might arrive before the page JS is ready.
@@ -56,25 +63,8 @@ export function buildTemplate(schema = {}, opts = {}) {
 })();
 </script>`;
 
-  // OBS timer helper
-  const obsOnly = mode === "obs" ? `
-    function scheduleInOut(){
-      setTimeout(function(){
-        try { if (r && r.play) r.play(); } catch(e){}
-        if (trigIn) fireVmTrigger(trigIn);
-        if (outAfterMs > 0){
-          setTimeout(function(){
-            if (trigOut) fireVmTrigger(trigOut); else { try { if (r && r.stop) r.stop(); } catch(e){} }
-            if (clearAfterMs > 0){
-              setTimeout(function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} }, clearAfterMs);
-            }
-          }, outAfterMs);
-        }
-      }, Math.max(0, startMs));
-    }` : "";
-
   // Caspar API: robust parse + early-call capture + queue + first-play guard
-  const casparApi = mode === "caspar" ? `
+  const casparApi = `
     // --- Robust UPDATE + early-call capture + first-play guard ---
     var __hasUpdatedOnce = false;
     var __firstPlayPending = false;
@@ -199,7 +189,7 @@ export function buildTemplate(schema = {}, opts = {}) {
     window.next   = function(){ ${casparTriggers.next ? `fireVmTrigger(${JSON.stringify(casparTriggers.next)});` : ""} };
     window.stop   = function(){ var fired = ${casparTriggers.out ? `fireVmTrigger(${JSON.stringify(casparTriggers.out)})` : `false`}; if (!fired) { try { if (r && r.stop) r.stop(); } catch(e){} } };
     window.remove = function(){ try { if (r && r.cleanup) r.cleanup(); } catch(e){} };
-  ` : "";
+  `;
 
   // Precompute VM maps (case-insensitive mapping support)
   const vmIndexLiteral = '{' + vprops.map(p => `"${p.name.toLowerCase()}":"${esc(p.name)}"`).join(',') + '}';
@@ -209,7 +199,7 @@ export function buildTemplate(schema = {}, opts = {}) {
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>${mode === "caspar" ? "CasparCG + Rive" : "OBS + Rive"}</title>
+<title>CasparCG + Rive</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <style>
   html{background:transparent;overflow:hidden}
@@ -227,7 +217,6 @@ export function buildTemplate(schema = {}, opts = {}) {
   (function(){
     "use strict";
     function num(v, d){ var n = Number(v); return isFinite(n) ? n : d; }
-    function numOr(v, d){ return (typeof v === "number" && isFinite(v)) ? v : d; }
     function toColor32(raw){
       if (raw == null) return null;
       var s = String(raw).trim();
@@ -257,10 +246,72 @@ export function buildTemplate(schema = {}, opts = {}) {
     }
     function getEmbeddedBase64(){ var el = document.getElementById('riv-b64'); return el ? (el.textContent || '') : ""; }
 
+    // Image binding helper (data:, b64:, https:)
+    function setImageFromSource(propName, src) {
+      if (!vmi) return;
+      try {
+        var ip = vmi.image ? vmi.image(propName) : null;
+        if (!ip) return;
+
+        if (src == null || src === "" || src === "clear" || src === "none") {
+          ip.value = null;
+          return;
+        }
+
+        function decodeAndSet(bytes) {
+          try {
+            rive.decodeImage(bytes).then(function(img) {
+              try { ip.value = img; } finally { try { img.unref && img.unref(); } catch(e){} }
+            }).catch(function(e){ console.error("decodeImage failed", e); });
+          } catch (e) { console.error("decodeImage threw", e); }
+        }
+
+        var s = String(src);
+
+        if (/^data:/i.test(s)) {
+          var i = s.indexOf("base64,");
+          if (i >= 0) {
+            var b64 = s.slice(i + 7);
+            var bin = atob(b64);
+            var arr = new Uint8Array(bin.length);
+            for (var k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+            decodeAndSet(arr); return;
+          }
+          console.warn("data: URL without base64 not supported"); return;
+        }
+
+        if (/^b64:/i.test(s)) {
+          var b64raw = s.slice(4);
+          var bin2 = atob(b64raw);
+          var arr2 = new Uint8Array(bin2.length);
+          for (var m = 0; m < bin2.length; m++) arr2[m] = bin2.charCodeAt(m);
+          decodeAndSet(arr2); return;
+        }
+
+        if (/^https?:/i.test(s)) {
+          fetch(s, { cache: "no-store" })
+            .then(function(r){ return r.arrayBuffer(); })
+            .then(function(buf){ decodeAndSet(new Uint8Array(buf)); })
+            .catch(function(e){ console.error("fetch image failed", e); });
+          return;
+        }
+
+        // Fallback: try raw base64
+        try {
+          var bin3 = atob(s);
+          var arr3 = new Uint8Array(bin3.length);
+          for (var n = 0; n < bin3.length; n++) arr3[n] = bin3.charCodeAt(n);
+          decodeAndSet(arr3);
+        } catch(e) {
+          console.warn("Unrecognized image value:", s);
+        }
+      } catch(e) { console.error("setImageFromSource failed", e); }
+    }
+
     var CANVAS = document.getElementById("cg");
     var r = null, vmi = null;
 
-    // URL params
+    // URL params (handy for testing from a browser)
     var u = new URL(window.location.href);
     var params = u.searchParams;
 
@@ -272,23 +323,13 @@ export function buildTemplate(schema = {}, opts = {}) {
     var DEF = {
       riv: ${embed ? '""' : JSON.stringify(rivPath)},
       artboard: ${JSON.stringify(artboard || "Artboard")},
-      sm: ${JSON.stringify(stateMachine || "State Machine 1")},
-      startMs: ${startMs},
-      outAfterMs: ${outAfterMs},
-      clearAfterMs: ${clearAfterMs}
+      sm: ${JSON.stringify(stateMachine || "State Machine 1")}
     };
 
     var RIV_BASE64 = ${embed ? 'getEmbeddedBase64()' : '""'};
     var riv = ${embed ? '(RIV_BASE64 ? base64ToBlobUrl(RIV_BASE64) : DEF.riv)' : '(params.get("riv") || DEF.riv)' };
     var ab  = params.get("artboard") || params.get("ab") || (DEF.artboard || undefined);
     var sm  = params.get("sm") || params.get("statemachine") || (DEF.sm || undefined);
-
-    ${mode === "obs" ? `
-    var trigIn  = params.get("in")  || null;
-    var trigOut = params.get("out") || null;
-    var startMs    = num(params.get("startMs"), DEF.startMs);
-    var outAfterMs = num(params.get("outAfterMs"), DEF.outAfterMs);
-    var clearAfterMs = num(params.get("clearAfterMs"), DEF.clearAfterMs);` : ""}
 
     function applyFromUrl(){
       if (!vmi) return;
@@ -304,6 +345,7 @@ export function buildTemplate(schema = {}, opts = {}) {
           if (vmi.number && (it2=vmi.number(name)))   { var nn=Number(value); if (isFinite(nn)) it2.value = nn; return; }
           if (vmi.boolean && (it2=vmi.boolean(name))) { it2.value = (String(value).toLowerCase()==="true"||value==="1"||String(value).toLowerCase()==="yes"); return; }
           if (vmi.color && (it2=vmi.color(name)))     { var cc=toColor32(value); if (cc!=null) it2.value = cc; return; }
+          if (vmi.image && (it2=vmi.image(name)))     { setImageFromSource(name, String(value)); return; }
           if (vmi.trigger && (it2=vmi.trigger(name))) { if (value==="true"||value==="1") { fireVmTrigger(name); } return; }
         } catch(e){}
       });
@@ -344,24 +386,20 @@ export function buildTemplate(schema = {}, opts = {}) {
               }
             } catch(e){}
 
-            ${mode === "obs" ? "scheduleInOut();" : ""}
             try { window.addEventListener("resize", function(){ try { if (r && r.resizeDrawingSurfaceToCanvas) r.resizeDrawingSurfaceToCanvas(); } catch(e){} }); } catch(e){}
           }
         });
       } catch(e){ console.error("Rive boot error", e); }
     }
 
-    ${obsOnly}
-
     function apply(o){
       if (!o || !vmi) return;
 
       // Fast path for known props (exact-name setters)
-      ${mode === "caspar" ? vprops.map(setterUpdateLine).join("\n      ") : ""}
+      ${vprops.map(setterUpdateLine).join("\n      ")}
 
       // Generic, case-insensitive fallback
       try {
-        // VM name maps are injected from the generator:
         var VM_INDEX = ${vmIndexLiteral};
         var VM_TYPES = ${vmTypesLiteral};
 
@@ -382,6 +420,7 @@ export function buildTemplate(schema = {}, opts = {}) {
             else if (t === "number" && vmi.number && (it=vmi.number(name))) { var n=Number(val); if (isFinite(n)) { it.value = n; done = true; } }
             else if (t === "boolean"&& vmi.boolean&& (it=vmi.boolean(name))){ it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; }
             else if (t === "color"  && vmi.color  && (it=vmi.color(name)))   { var c = toColor32(val); if (c!=null){ it.value = c; done = true; } }
+            else if (t === "image"  && vmi.image) { setImageFromSource(name, String(val)); done = true; }
             else if (t === "trigger" && (val===true || String(val)==="true" || String(val)==="1")) { fireVmTrigger(name); done = true; }
           } catch(e){}
 
@@ -392,6 +431,7 @@ export function buildTemplate(schema = {}, opts = {}) {
           try { if (!done && vmi.number  && (it=vmi.number(name)))  { var n2=Number(val); if (isFinite(n2)) { it.value = n2; done = true; } } } catch(e){}
           try { if (!done && vmi.boolean && (it=vmi.boolean(name))) { it.value = (String(val).toLowerCase()==="true"||val===true||val===1||String(val).toLowerCase()==="yes"); done = true; } } catch(e){}
           try { if (!done && vmi.color   && (it=vmi.color(name)))   { var c2=toColor32(val); if (c2!=null) { it.value = c2; done = true; } } } catch(e){}
+          try { if (!done && vmi.image) { var test=vmi.image(name); if (test) { setImageFromSource(name, String(val)); done = true; } } } catch(e){}
           if (!done && (val===true || String(val)==="true" || String(val)==="1")) { try { fireVmTrigger(name); } catch(e){} }
         }
       } catch(e){}
@@ -409,10 +449,9 @@ export function buildTemplate(schema = {}, opts = {}) {
 }
 
 // helpers for the generator (Node/Browser-safe)
-function numOr(x, d){ return (typeof x === "number" && isFinite(x)) ? x : d; }
 function esc(s){ return String(s).replace(/["\\]/g, (m) => "\\" + m); }
 
-// OBS URL param → VM setter lines (inserted in template)
+// Optional URL param → VM setter lines (inserted in template for quick tests)
 function setterLine(p){
   const key = `vm.${p.name}`;  // exact (case-sensitive) URL key
   const safe = esc(p.name);
@@ -424,6 +463,8 @@ function setterLine(p){
     return `v = params.get("${key}"); if (v != null) { b = (String(v).toLowerCase()==="true"||v==="1"||String(v).toLowerCase()==="yes"); try { if (vmi && vmi.boolean) { it = vmi.boolean("${safe}"); if (it) it.value = b; } } catch(e){} }`;
   if (p.type === "color")
     return `v = params.get("${key}"); if (v != null) { c = toColor32(v); if (c != null) { try { if (vmi && vmi.color) { it = vmi.color("${safe}"); if (it) it.value = c; } } catch(e){} } }`;
+  if (p.type === "image")
+    return `v = params.get("${key}"); if (v != null) { try { setImageFromSource("${safe}", String(v)); } catch(e){} }`;
   if (p.type === "trigger")
     return `v = params.get("${key}"); if (v === "true" || v === "1") { try { fireVmTrigger("${safe}"); } catch(e){} }`;
   return "";
@@ -442,11 +483,20 @@ function setterUpdateLine(p){
     return `if (o["${safe}"] != null) try { if (vmi && vmi.boolean) { var it=vmi.boolean("${safe}"); if (it) it.value = (String(o["${safe}"]).toLowerCase()==="true"||o["${safe}"]===true||o["${safe}"]===1||String(o["${safe}"]).toLowerCase()==="yes"); } } catch(e){}`;
   if (p.type === "color")
     return `if (o["${safe}"] != null) { var c=toColor32(o["${safe}"]); if (c!=null) try { if (vmi && vmi.color) { var it=vmi.color("${safe}"); if (it) it.value = c; } } catch(e){} }`;
+  if (p.type === "image")
+    return `if (o["${safe}"] != null) try { setImageFromSource("${safe}", String(o["${safe}"])); } catch(e){}`;
   return "";
 }
 
-// Bake default VM values for OBS (stringly-typed; converted at runtime)
+// Bake default VM values (stringly-typed; converted at runtime)
 function bakeDefaultLine(name, value){
   const safe = esc(name);
-  return `try { var it=vmi && vmi.string ? vmi.string("${safe}") : null; if (it) it.value = String(${JSON.stringify(String(value))}); } catch(e){}`;
+  return `try {
+    var it;
+    if (vmi && vmi.string && (it=vmi.string("${safe}")))   { it.value = String(${JSON.stringify(String(value))}); return; }
+    if (vmi && vmi.number && (it=vmi.number("${safe}")))   { var n = Number(${JSON.stringify(String(value))}); if (isFinite(n)) it.value = n; return; }
+    if (vmi && vmi.boolean && (it=vmi.boolean("${safe}"))) { var b = (String(${JSON.stringify(String(value))}).toLowerCase()==="true"); it.value = b; return; }
+    if (vmi && vmi.color && (it=vmi.color("${safe}")))     { var c = toColor32(${JSON.stringify(String(value))}); if (c!=null) it.value = c; return; }
+    if (vmi && vmi.image && (it=vmi.image("${safe}")))     { setImageFromSource("${safe}", String(${JSON.stringify(String(value))})); return; }
+  } catch(e){}`;
 }

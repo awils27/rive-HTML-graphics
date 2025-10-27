@@ -23,7 +23,6 @@ function coerceVMValue(type, raw) {
       case "number":  return (raw == null) ? 0 : Number(raw);
       case "boolean": return !!raw;
       case "color":   {
-        // Keep as uint32 if numeric; else try parse #RRGGBB
         if (raw == null) return 0;
         const n = Number(raw);
         if (Number.isFinite(n)) return n >>> 0;
@@ -34,6 +33,7 @@ function coerceVMValue(type, raw) {
         return 0;
       }
       case "trigger": return null;
+      case "image":   return null; // images are set at runtime; default is null
       default:        return raw;
     }
   } catch {
@@ -41,8 +41,8 @@ function coerceVMValue(type, raw) {
   }
 }
 
-// Read top-level contents from a Blob/URL (.riv) by instantiating once.
-// Returns the raw `r.contents` shape from the runtime.
+// Inspect top-level contents by instantiating once.
+// `src` can be a URL, blob:, or file path the runtime can fetch.
 export async function inspectContents(src, canvas) {
   const { Rive } = getRiveGlobal();
   const cv = ensureCanvas(canvas);
@@ -69,8 +69,7 @@ export async function inspectContents(src, canvas) {
   });
 }
 
-// Build a ViewModel-only schema (artboard + state machine + default values)
-// by spinning up a temporary instance bound to a given artboard/SM.
+// Build a ViewModel-only schema (artboard + state machine + default values).
 export async function buildSchema(src, canvas, artboard, stateMachine) {
   const { Rive } = getRiveGlobal();
   const cv = ensureCanvas(canvas);
@@ -88,7 +87,6 @@ export async function buildSchema(src, canvas, artboard, stateMachine) {
         onLoad() {
           let viewModelProps = [];
           try {
-            // Prefer VM properties from the instance/default VM if exposed
             const vm  = (typeof r.defaultViewModel === "function") ? r.defaultViewModel() : null;
             const vmi = r.viewModelInstance || null;
 
@@ -101,6 +99,7 @@ export async function buildSchema(src, canvas, artboard, stateMachine) {
                     else if (p.type === "number")  raw = vmi?.number(p.name)?.value;
                     else if (p.type === "boolean") raw = vmi?.boolean(p.name)?.value;
                     else if (p.type === "color")   raw = vmi?.color(p.name)?.value;
+                    else if (p.type === "image")   raw = null; // images have no static default
                     // triggers have no value
                   } catch {}
                   return { name: p.name, type: p.type, value: coerceVMValue(p.type, raw) };
