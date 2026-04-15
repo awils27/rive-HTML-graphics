@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Rive → Caspar / OBS</title>
+  <title>Rive to Caspar / OGraf</title>
   <link rel="icon" type="image/x-icon" href="./images/favicon.ico">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <!-- Load Rive runtime for builder-time introspection -->
@@ -56,7 +56,7 @@
 
 <body>
   <main class="container">
-    <h2>Rive to CasparCG</h2>
+    <h2>Rive to CasparCG / OGraf</h2>
     <p class="muted">Front-end only - optional Base64 embedding</p>
     <article>
       <div class="grid">
@@ -65,9 +65,9 @@
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
             referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
         <div>
-          <h3>Generate a CasparCG Template</h3>
+          <h3>Generate Broadcast Graphics</h3>
           <p>Select your riv file exported from <a href="https://rive.app/" target="_blank">Rive</a>, choose the
-            artboard to use. Select your in and out triggers and download your HTML template.</p>
+            artboard to use. Select your in and out triggers and download a CasparCG or OGraf template.</p>
           <p>WebGL requires GPU to be enabled in the CasparCG config file. use canvas for maximum compatibility.</p>
         </div>
       </div>
@@ -110,6 +110,7 @@
     <!-- Caspar -->
     <section id="caspar" role="tabpanel" aria-labelledby="tabCaspar">
       <article>
+        <h3>CasparCG</h3>
         <div class="grid-2">
           <fieldset>
             <legend>Runtime</legend>
@@ -146,6 +147,47 @@
         </footer>
       </article>
     </section>
+
+    <section id="ograf" role="tabpanel" aria-labelledby="tabOGraf">
+      <article>
+        <h3>OGraf</h3>
+        <div class="grid-2">
+          <div>
+            <label for="ografId">Graphic ID</label>
+            <input id="ografId" type="text" value="io.github.awils27.graphic">
+          </div>
+          <div>
+            <label for="ografName">Name</label>
+            <input id="ografName" type="text" value="Graphic">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label for="ografVersion">Version</label>
+            <input id="ografVersion" type="text" value="1.0.0">
+          </div>
+          <div>
+            <label for="ografAuthor">Author</label>
+            <input id="ografAuthor" type="text" value="Aiden Wilson">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label for="ografStepCount">Step count</label>
+            <input id="ografStepCount" type="number" value="1" min="-1" step="1">
+          </div>
+          <div>
+            <label for="ografMain">Main JS filename</label>
+            <input id="ografMain" type="text" value="graphic.js">
+          </div>
+        </div>
+        <footer style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
+          <button id="dlOGrafManifest" class="secondary" disabled>Download OGraf Manifest</button>
+          <button id="dlOGrafJs" class="secondary" disabled>Download OGraf JS</button>
+        </footer>
+        <small class="muted">This first OGraf slice downloads the manifest and Web Component JavaScript separately. ZIP packaging and bundled .riv assets can come next.</small>
+      </article>
+    </section>
   </main>
   <footer class="container" style="text-align: center;">
       <small
@@ -158,7 +200,7 @@
       >
     </footer>
 
-  <script type="module" src="./js/app.mjs"></script>
+  <script type="module" src="/src/app.ts"></script>
 </body>
 
 </html>
