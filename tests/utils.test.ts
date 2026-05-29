@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filenameBase, sanitizeFilename } from "./utils";
+import { filenameBase, sanitizeFilename } from "../src/utils";
 
 describe("filename helpers", () => {
   it("sanitizes unsafe filename characters", () => {

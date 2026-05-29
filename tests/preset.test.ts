@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildCasparClientPresetXml } from "./preset";
-import type { RiveSchema } from "./types";
+import { buildCasparClientPresetXml } from "../src/preset";
+import type { RiveSchema } from "../src/types";
 
 describe("buildCasparClientPresetXml", () => {
   it("escapes XML values, skips triggers, and respects options", () => {

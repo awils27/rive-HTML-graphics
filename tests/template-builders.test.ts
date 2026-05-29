@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildTemplate } from "./template-builders";
-import type { RiveSchema } from "./types";
+import { buildTemplate } from "../src/template-builders";
+import type { RiveSchema } from "../src/types";
 
 const schema: RiveSchema = {
   artboard: "Lower Third",

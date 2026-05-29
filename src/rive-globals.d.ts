@@ -18,6 +18,7 @@ declare global {
     canvas: HTMLCanvasElement;
     autoplay: boolean;
     artboard?: string;
+    animations?: string | string[];
     stateMachines?: string;
     autoBind?: boolean;
     onLoad?: () => void;

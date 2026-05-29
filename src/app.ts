@@ -2,13 +2,19 @@ import { downloadCasparClientPresetXml } from "./preset";
 import {
   buildOGrafComponent,
   buildOGrafManifest,
+  defaultOGrafManifestFilename,
   defaultOGrafId,
   defaultOGrafMainFilename,
+  normalizeOGrafId,
+  normalizeOGrafMainFilename,
+  normalizeOGrafStepCount,
+  riveRuntimeAssetUrl,
 } from "./ograf-builders";
 import { buildSchema, inspectContents } from "./rive-introspect";
 import { buildTemplate } from "./template-builders";
 import type { OGrafOptions, RiveContents, RiveContentsArtboard, RiveSchema, Runtime, ViewModelProp } from "./types";
-import { $, downloadBlob, fileToBase64, filenameBase } from "./utils";
+import { $, downloadBlob, fileToBase64, filenameBase, sanitizeFilename } from "./utils";
+import { createZip, type ZipSource } from "./zip";
 
 const on = <K extends keyof HTMLElementEventMap>(
   element: HTMLElement | null,
@@ -48,8 +54,10 @@ let elOGrafVersion: HTMLInputElement | null = null;
 let elOGrafAuthor: HTMLInputElement | null = null;
 let elOGrafStepCount: HTMLInputElement | null = null;
 let elOGrafMain: HTMLInputElement | null = null;
+let elOGrafFallbackTimeline: HTMLSelectElement | null = null;
 let elBtnOGrafManifest: HTMLButtonElement | null = null;
 let elBtnOGrafJs: HTMLButtonElement | null = null;
+let elBtnOGrafZip: HTMLButtonElement | null = null;
 let elStatus: HTMLElement | null = null;
 
 let file: File | null = null;
@@ -121,12 +129,11 @@ function enableOutputButtons(yes: boolean): void {
   enable(elBtnXml, yes);
   enable(elBtnOGrafManifest, yes);
   enable(elBtnOGrafJs, yes);
+  enable(elBtnOGrafZip, yes);
 }
 
 function ensureJsFilename(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return defaultOGrafMainFilename(baseName);
-  return /\.js$/i.test(trimmed) ? trimmed : `${trimmed}.js`;
+  return normalizeOGrafMainFilename(value, baseName);
 }
 
 function getArtboards(data: RiveContents | null): Array<string | RiveContentsArtboard> {
@@ -147,6 +154,19 @@ function getStateMachineNamesForArtboard(data: RiveContents | null, artName: str
   const artboard = getArtboards(data).find((item) => itemName(item) === artName);
   if (!artboard || typeof artboard === "string") return [];
   return (artboard.stateMachines ?? []).map(itemName).filter((name): name is string => Boolean(name));
+}
+
+function getAnimationNamesForArtboard(data: RiveContents | null, artName: string): string[] {
+  if (!data) return [];
+  const artboard = getArtboards(data).find((item) => itemName(item) === artName);
+  if (artboard && typeof artboard !== "string") {
+    const artboardAnimations = artboard.animations ?? artboard.animationNames ?? artboard.timelines ?? [];
+    const names = artboardAnimations.map(itemName).filter((name): name is string => Boolean(name));
+    if (names.length > 0) return names;
+  }
+
+  const fileAnimations = data.animations ?? data.data?.animations ?? [];
+  return fileAnimations.map(itemName).filter((name): name is string => Boolean(name));
 }
 
 async function analyzeSelectedFile(): Promise<void> {
@@ -173,6 +193,7 @@ async function analyzeSelectedFile(): Promise<void> {
 
   populateSelect(elArtSel, getArtboardNames(contents), { placeholder: "- choose artboard -" });
   populateSelect(elSmSel, [], { placeholder: "- choose state machine -" });
+  populateSelect(elOGrafFallbackTimeline, [], { placeholder: "- optional -" });
 
   schema = null;
   updateVmTable([]);
@@ -234,7 +255,7 @@ async function getOGrafOptions(): Promise<OGrafOptions | null> {
   const authorName = elOGrafAuthor?.value.trim() || "";
 
   return {
-    id: elOGrafId?.value.trim() || defaultOGrafId(baseName),
+    id: normalizeOGrafId(elOGrafId?.value || "", baseName),
     name: elOGrafName?.value.trim() || baseName,
     version: elOGrafVersion?.value.trim() || "1.0.0",
     author: authorName ? { name: authorName } : undefined,
@@ -243,13 +264,71 @@ async function getOGrafOptions(): Promise<OGrafOptions | null> {
     embed,
     base64,
     rivPath,
-    stepCount: Number.isFinite(stepCount) ? stepCount : 1,
+    stepCount: normalizeOGrafStepCount(stepCount),
+    fallbackTimeline: elOGrafFallbackTimeline?.value || null,
     triggers: {
       in: elInTrig?.value || null,
       out: elOutTrig?.value || null,
       next: elNextTrig?.value || null,
     },
   };
+}
+
+async function fetchRuntimeAsset(runtime: Runtime, assetName: string): Promise<Blob> {
+  const url = riveRuntimeAssetUrl(runtime, assetName);
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to download ${assetName} (${response.status})`);
+  return response.blob();
+}
+
+async function maybeFetchRuntimeAsset(runtime: Runtime, assetName: string): Promise<Blob | null> {
+  try {
+    return await fetchRuntimeAsset(runtime, assetName);
+  } catch {
+    return null;
+  }
+}
+
+async function downloadOGrafZipPackage(options: OGrafOptions): Promise<void> {
+  if (!schema || !file) {
+    setText(elStatus, "Select a .riv first.");
+    return;
+  }
+
+  setText(elStatus, "Downloading Rive runtime...");
+  const runtimeScript = await fetchRuntimeAsset(options.runtime, "rive.js");
+  const runtimeWasm = await fetchRuntimeAsset(options.runtime, "rive.wasm");
+  const runtimeWasmFallback = await maybeFetchRuntimeAsset(options.runtime, "rive_fallback.wasm");
+
+  const rivFilename = sanitizeFilename(file.name) || `${filenameBase(file.name)}.riv`;
+  const packageOptions: OGrafOptions = {
+    ...options,
+    embed: false,
+    base64: "",
+    rivPath: rivFilename,
+    runtimeScriptUrl: "rive-runtime.js",
+    runtimeWasmUrl: "rive.wasm",
+    runtimeWasmFallbackUrl: runtimeWasmFallback ? "rive_fallback.wasm" : null,
+  };
+
+  const manifestName = defaultOGrafManifestFilename(packageOptions.mainFilename, packageOptions.name);
+  const files: ZipSource[] = [
+    { filename: manifestName, data: buildOGrafManifest(schema, packageOptions) },
+    { filename: packageOptions.mainFilename, data: buildOGrafComponent(schema, packageOptions) },
+    { filename: rivFilename, data: file },
+    { filename: "rive-runtime.js", data: runtimeScript },
+    { filename: "rive.wasm", data: runtimeWasm },
+  ];
+
+  if (runtimeWasmFallback) {
+    files.push({ filename: "rive_fallback.wasm", data: runtimeWasmFallback });
+  }
+
+  setText(elStatus, "Building OGraf ZIP...");
+  const zipName = `${filenameBase(packageOptions.mainFilename)}-ograf.zip`;
+  const zip = await createZip(files);
+  downloadBlob(zip, zipName);
+  setText(elStatus, `Downloaded ${zipName}`);
 }
 
 function wire(): void {
@@ -272,8 +351,10 @@ function wire(): void {
   elOGrafAuthor = $<HTMLInputElement>("#ografAuthor");
   elOGrafStepCount = $<HTMLInputElement>("#ografStepCount");
   elOGrafMain = $<HTMLInputElement>("#ografMain");
+  elOGrafFallbackTimeline = $<HTMLSelectElement>("#ografFallbackTimeline");
   elBtnOGrafManifest = $<HTMLButtonElement>("#dlOGrafManifest");
   elBtnOGrafJs = $<HTMLButtonElement>("#dlOGrafJs");
+  elBtnOGrafZip = $<HTMLButtonElement>("#dlOGrafZip");
   elStatus = $<HTMLElement>("#status");
 
   if (!elFile) {
@@ -297,6 +378,9 @@ function wire(): void {
   on(elArtSel, "change", () => {
     populateSelect(elSmSel, getStateMachineNamesForArtboard(contents, elArtSel?.value || ""), {
       placeholder: "- choose state machine -",
+    });
+    populateSelect(elOGrafFallbackTimeline, getAnimationNamesForArtboard(contents, elArtSel?.value || ""), {
+      placeholder: "- optional -",
     });
     void maybeBuildSchema();
   });
@@ -359,7 +443,7 @@ function wire(): void {
     }
     const options = await getOGrafOptions();
     if (!options) return;
-    const manifestName = options.mainFilename.replace(/\.js$/i, ".ograf.json");
+    const manifestName = defaultOGrafManifestFilename(options.mainFilename, options.name);
     downloadBlob(
       new Blob([buildOGrafManifest(schema, options)], { type: "application/json" }),
       manifestName,
@@ -379,6 +463,21 @@ function wire(): void {
       options.mainFilename,
     );
     setText(elStatus, `Downloaded ${options.mainFilename}`);
+  });
+
+  on(elBtnOGrafZip, "click", async () => {
+    if (!schema) {
+      setText(elStatus, "Select artboard & state machine first.");
+      return;
+    }
+    const options = await getOGrafOptions();
+    if (!options) return;
+    try {
+      await downloadOGrafZipPackage(options);
+    } catch (error) {
+      console.error(error);
+      setText(elStatus, "Failed to download OGraf ZIP (see console).");
+    }
   });
 
   window.addEventListener("beforeunload", revokeBlob);

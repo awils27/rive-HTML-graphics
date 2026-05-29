@@ -57,11 +57,36 @@ export interface OGrafOptions {
   author?: OGrafAuthor;
   mainFilename: string;
   runtime: Runtime;
+  runtimeScriptUrl?: string;
+  runtimeWasmUrl?: string;
+  runtimeWasmFallbackUrl?: string | null;
   embed: boolean;
   base64?: string;
   rivPath?: string;
   stepCount: number;
+  fallbackTimeline?: string | null;
   triggers?: CasparTriggers;
+}
+
+export interface OGrafNumberConstraint {
+  max?: number;
+  min?: number;
+  exact?: number;
+  ideal?: number;
+}
+
+export interface OGrafBooleanConstraint {
+  exact?: boolean;
+  ideal?: boolean;
+}
+
+export interface OGrafRenderRequirement {
+  resolution?: {
+    width?: OGrafNumberConstraint;
+    height?: OGrafNumberConstraint;
+  };
+  frameRate?: OGrafNumberConstraint;
+  accessToPublicInternet?: OGrafBooleanConstraint;
 }
 
 export interface OGrafFile {
@@ -72,11 +97,16 @@ export interface OGrafFile {
 export interface RiveContentsArtboard {
   name?: string;
   stateMachines?: Array<string | { name?: string }>;
+  animations?: Array<string | { name?: string }>;
+  animationNames?: Array<string | { name?: string }>;
+  timelines?: Array<string | { name?: string }>;
 }
 
 export interface RiveContents {
+  animations?: Array<string | { name?: string }>;
   artboards?: Array<string | RiveContentsArtboard>;
   data?: {
+    animations?: Array<string | { name?: string }>;
     artboards?: Array<string | RiveContentsArtboard>;
   };
 }

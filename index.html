@@ -181,11 +181,19 @@
             <input id="ografMain" type="text" value="graphic.js">
           </div>
         </div>
+        <div class="grid-2">
+          <div>
+            <label for="ografFallbackTimeline">Fallback timeline</label>
+            <select id="ografFallbackTimeline"></select>
+          </div>
+          <div>&nbsp;</div>
+        </div>
         <footer style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
           <button id="dlOGrafManifest" class="secondary" disabled>Download OGraf Manifest</button>
           <button id="dlOGrafJs" class="secondary" disabled>Download OGraf JS</button>
+          <button id="dlOGrafZip" class="contrast" disabled>Download OGraf ZIP</button>
         </footer>
-        <small class="muted">This first OGraf slice downloads the manifest and Web Component JavaScript separately. ZIP packaging and bundled .riv assets can come next.</small>
+        <small class="muted">The ZIP package includes the OGraf manifest, Web Component JavaScript, .riv file, and local Rive runtime assets for offline playback.</small>
       </article>
     </section>
   </main>
